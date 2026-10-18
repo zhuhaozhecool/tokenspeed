@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from tokenspeed.runtime.engine.io_struct import FlushCacheDomain, FlushCacheReqOutput
+
 
 class FakeLLM:
     def __init__(self) -> None:
@@ -70,4 +72,7 @@ class FakeLLM:
         self.scheduler_calls.append(("abort", rid))
 
     async def flush_cache(self):
-        return None
+        return FlushCacheReqOutput(
+            success=self.succeed,
+            domains=[FlushCacheDomain(dp_rank=0, success=self.succeed)],
+        )

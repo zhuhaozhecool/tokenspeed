@@ -30,21 +30,105 @@ scheduler with — feedback into the scheduler stays an explicit
 
 from __future__ import annotations
 
+import hashlib
+import os
+import struct
+
 from tokenspeed_scheduler import PD
 
+from tokenspeed.runtime.pd.audit import emit_pd_audit
+from tokenspeed.runtime.pd.bench_cohort import (
+    CohortError,
+    CohortGate,
+    CohortStore,
+    request_tag,
+)
 from tokenspeed.runtime.pd.decode_executor import DisaggDecodeExecutor
 from tokenspeed.runtime.pd.prefill_executor import DisaggPrefillExecutor
 
 
 class PdTransferHooks:
-    """EventLoop-side PD transfer hooks: glue, no state of its own. A cheap
-    no-op when PD is disabled (``kv_transfer=None``).
+    """Integrate PD events and the explicitly enabled benchmark hold queue.
+
+    A cheap no-op when PD is disabled (``kv_transfer=None``).
     """
 
     def __init__(self, loop, device) -> None:
         self._loop = loop
         # Injected, not reached through the loop — see PauseHooks.
         self._device = device
+        self._cohort: CohortGate | None = None
+        directory = os.environ.get("TOKENSPEED_BENCH_COHORT_DIR")
+        if directory and isinstance(loop.kv_transfer, DisaggDecodeExecutor):
+            import torch.distributed as dist
+
+            mapping = loop.server_args.mapping
+            if (
+                mapping.world_size != 16
+                or mapping.attn.tp_size != 8
+                or mapping.attn.dp_size != 2
+            ):
+                raise CohortError(
+                    "Cohort gate supports only D TP8 DP2 on one 16-rank host"
+                )
+
+            def sync(payload):
+                values = [payload]
+                dist.broadcast_object_list(
+                    values,
+                    src=mapping.attn.tp_group[0],
+                    group=loop.kv_transfer.gloo_group,
+                )
+                return values[0]
+
+            def emit(event, **fields):
+                # dp_rank is already part of each actual request binding.
+                fields.pop("dp_rank", None)
+                emit_pd_audit(
+                    event,
+                    role="decode",
+                    global_rank=loop.global_rank,
+                    dp_rank=loop.dp_rank,
+                    **fields,
+                )
+
+            self._cohort = CohortGate(
+                CohortStore(directory),
+                global_rank=loop.global_rank,
+                dp_rank=loop.dp_rank,
+                sync=sync,
+                emit=emit,
+            )
+
+    def admit_cohort_request(self, rid, state, bootstrap) -> bool:
+        """Bind explicit benchmark requests before any destination pages are leased."""
+        try:
+            if request_tag(rid) is None:
+                return True
+            if self._cohort is None:
+                raise CohortError("D benchmark cohort gate is disabled")
+            ids = state.prompt_input_ids
+            input_hash = hashlib.sha256(struct.pack(f"<{len(ids)}I", *ids)).hexdigest()
+            self._cohort.bind(
+                rid,
+                bootstrap.bootstrap_room,
+                input_hash,
+                input_tokens=state.input_length,
+                output_tokens=state.sampling_params.max_new_tokens,
+            )
+            return True
+        except CohortError as error:
+            state.set_finish_with_abort(
+                f"Benchmark cohort admission rejected: {error}", notify_client=True
+            )
+            self._loop.output_processor.publish_finished_at_admission(rid, state)
+            return False
+
+    def observe_committed(self, request_ids):
+        if self._cohort is not None:
+            self._cohort.committed(
+                request_ids, self._loop.output_processor.rid_to_state
+            )
 
     def record_prefill_usage(self, request_ids: list[str]) -> None:
         """Forward committed host-side usage before remote-decode dispatch.
@@ -76,8 +160,39 @@ class PdTransferHooks:
         if loop.kv_transfer is None:
             return []
 
+        events = loop.kv_transfer.generate_events()
+        gate = self._cohort
+        if gate is not None:
+            if not loop.output_processor.rid_to_state and not gate.holding:
+                gate.idle()
+            passed = []
+            for event in events:
+                if isinstance(event, PD.RemotePrefillDoneEvent):
+                    if event.request_id in gate.bindings and gate.receive(
+                        event.request_id,
+                        event,
+                        loop.kv_transfer.bench_completion_context(event.request_id),
+                    ):
+                        continue
+                elif isinstance(event, PD.FailedEvent):
+                    gate.fail(event.request_id, "Actual PD transfer failed")
+                    loop.kv_transfer.discard_remote_completion(event.request_id)
+                passed.append(event)
+            cancelled = {
+                rid
+                for rid in gate.bindings
+                if rid in loop.output_processor.rid_to_state
+                and loop.output_processor.rid_to_state[rid].to_abort
+            }
+            for event, aborted in gate.tick(cancelled):
+                if aborted:
+                    loop.kv_transfer.discard_remote_completion(event.request_id)
+                    event = PD.FailedEvent(event.request_id)
+                passed.append(event)
+            events = passed
+
         processed = []
-        for event in loop.kv_transfer.generate_events():
+        for event in events:
             processed.append(event)
             if isinstance(event, PD.SucceededEvent) and isinstance(
                 loop.kv_transfer, DisaggPrefillExecutor

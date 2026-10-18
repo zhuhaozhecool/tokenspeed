@@ -35,17 +35,19 @@ Architecture::
 from __future__ import annotations
 
 import json
+import os
 
 import aiohttp
 import grpc
 import grpc.aio
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from google.protobuf.json_format import MessageToDict
 from smg_grpc_proto.generated import tokenspeed_scheduler_pb2 as pb
 from smg_grpc_proto.generated import tokenspeed_scheduler_pb2_grpc as pb_grpc
 
+from tokenspeed.runtime.entrypoints.proxy_timeout import proxy_sock_read_timeout
 from tokenspeed.runtime.utils import get_colorful_logger
 
 logger = get_colorful_logger(__name__)
@@ -69,7 +71,9 @@ _STREAM_CHUNK_SIZE = 8192
 # mid-stream. `sock_connect` bounds connecting to smg; `sock_read` bounds
 # inactivity (a genuinely hung/stalled upstream) without killing a legitimately
 # long but actively-streaming request.
-_PROXY_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=600)
+_PROXY_TIMEOUT = aiohttp.ClientTimeout(
+    total=None, sock_connect=30, sock_read=proxy_sock_read_timeout()
+)
 # A Mooncake weight load replies only once every worker has read its shard of
 # the checkpoint, which for a large model is minutes of silence on the
 # upstream socket; the default inactivity bound would abort a healthy load.
@@ -186,6 +190,7 @@ async def _proxy_request(
     base_url: str | None = None,
     body_override: bytes | None = None,
     timeout: aiohttp.ClientTimeout = _PROXY_TIMEOUT,
+    headers_override: dict[str, str] | None = None,
 ) -> StreamingResponse | Response:
     base_url = base_url if base_url is not None else _gateway_url
     url = f"{base_url.rstrip('/')}{request.url.path}"
@@ -197,6 +202,11 @@ async def _proxy_request(
         for k, v in request.headers.items()
         if k.lower() not in ("host", "content-length")
     }
+
+    if headers_override:
+        overridden = {k.lower() for k in headers_override}
+        headers = {k: v for k, v in headers.items() if k.lower() not in overridden}
+        headers.update(headers_override)
 
     # NOTE: the session must outlive the response. For streaming, FastAPI
     # consumes the body iterator *after* this function returns, so we cannot
@@ -354,7 +364,24 @@ async def generate(request: Request):
     if request.method != "POST":
         return await _proxy_request(request)
     body = await _prepare_sglang_generate_body(await request.body())
-    resp = await _proxy_request(request, body_override=body)
+    try:
+        data = json.loads(body)
+    except ValueError:
+        data = None
+    if isinstance(data, dict) and "data_parallel_rank" in data:
+        from tokenspeed.runtime.entrypoints.token_completions import gateway_pin_headers
+
+        headers = gateway_pin_headers(data, dp_targets=_configured_gateway_dp_targets())
+        supplied = request.headers.get("x-smg-target-worker")
+        if supplied is not None and supplied != headers["X-SMG-Target-Worker"]:
+            raise HTTPException(
+                400, "SMG target header conflicts with data_parallel_rank"
+            )
+        resp = await _proxy_request(
+            request, body_override=body, headers_override=headers
+        )
+    else:
+        resp = await _proxy_request(request, body_override=body)
     if not (isinstance(resp, Response) and resp.body):
         return resp  # streaming or empty: pass through
     try:
@@ -385,8 +412,48 @@ async def generate(request: Request):
     )
 
 
+def _configured_gateway_dp_targets() -> dict[str, int]:
+    try:
+        targets = json.loads(
+            os.environ.get("TOKENSPEED_TOKEN_GATEWAY_DP_TARGETS", "{}")
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            503, "Invalid TOKENSPEED_TOKEN_GATEWAY_DP_TARGETS JSON"
+        ) from exc
+    if (
+        not isinstance(targets, dict)
+        or any(
+            not isinstance(k, str) or not k.isdecimal() or type(v) is not int or v < 0
+            for k, v in targets.items()
+        )
+        or len(set(targets.values())) != len(targets)
+    ):
+        raise HTTPException(503, "Invalid TOKENSPEED_TOKEN_GATEWAY_DP_TARGETS")
+    return targets
+
+
 @app.api_route("/v1/completions", methods=["POST"])
 async def completions(request: Request):
+    body = await request.json()
+    if isinstance(body.get("prompt"), list):
+        from tokenspeed.runtime.entrypoints.token_completions import (
+            gateway_token_completions,
+            token_completions,
+        )
+
+        if os.environ.get("TOKENSPEED_STANDALONE_DECODE_BENCHMARK") == "reuse-cache":
+            return await token_completions(
+                body, _stub(), served_model=await _served_model()
+            )
+        targets = _configured_gateway_dp_targets()
+        return await gateway_token_completions(
+            body,
+            gateway_url=_gateway_url,
+            served_model=await _served_model(),
+            dp_targets=targets,
+            timeout=_PROXY_TIMEOUT,
+        )
     return await _proxy_request(request)
 
 
@@ -479,6 +546,11 @@ async def update_weights_from_disk(request: Request):
 
 @app.post("/pause_generation")
 async def pause_generation(request: Request):
+    return await _proxy_to_rl_control(request)
+
+
+@app.api_route("/bench/cohort/{action}", methods=["GET", "POST"])
+async def benchmark_cohort_control(request: Request, action: str):
     return await _proxy_to_rl_control(request)
 
 
