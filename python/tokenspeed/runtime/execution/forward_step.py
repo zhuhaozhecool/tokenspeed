@@ -49,6 +49,7 @@ from tokenspeed.runtime.execution.graph_ptr_guard import (
 from tokenspeed.runtime.execution.memory_delta import (
     MemoryDeltaObserver,
 )
+from tokenspeed.runtime.execution.npu_graph_inputs import update_npu_graph_cpu_inputs
 from tokenspeed.runtime.execution.output_layout import ForwardOutputLayout
 from tokenspeed.runtime.layers.attention.kv_cache.recipes.spec import (
     compute_max_logical_pages_for_capture,
@@ -1149,11 +1150,7 @@ class ForwardStepRunner:
             if self._graph_debug:
                 self._verify_graph_metadata(graph_key)
             if self.device == "npu":
-                graph.update(
-                    cpu_update_input=[
-                        {"actual_seq_lengths_kv": seq_lens.to("cpu").tolist()}
-                    ]
-                )
+                update_npu_graph_cpu_inputs(graph, seq_lens)
             if self._expert_load_rows is not None:
                 # Every rank replays the same padded batch; the live rows are
                 # the DP-gathered live counts (this rank's own without DP).
