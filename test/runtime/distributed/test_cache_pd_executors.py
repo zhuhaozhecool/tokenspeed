@@ -1028,10 +1028,14 @@ def test_engine_wrapper_requires_and_forwards_the_page_gathered_write(
     monkeypatch.setitem(sys.modules, "mooncake.engine", fake_module)
     # An engine without the page-gathered WRITE is a wrong install.
     with pytest.raises(RuntimeError, match="batch_transfer_sync_write_pages"):
-        MooncakeTransferEngine("10.0.0.1", gpu_id=0, ib_device=None)
+        MooncakeTransferEngine(
+            "10.0.0.1", gpu_id=0, ib_device=None, page_transfer_mode="native"
+        )
     # With it, bring-up completes and the session id names this rank.
     FakeTransferEngine.batch_transfer_sync_write_pages = lambda self, *a: 0
-    engine = MooncakeTransferEngine("10.0.0.1", gpu_id=0, ib_device="mlx5_0")
+    engine = MooncakeTransferEngine(
+        "10.0.0.1", gpu_id=0, ib_device="mlx5_0", page_transfer_mode="native"
+    )
     assert engine.session_id == "10.0.0.1:4321"
     assert engine.engine.initialized == ("10.0.0.1", "P2PHANDSHAKE", "rdma", "mlx5_0")
 
