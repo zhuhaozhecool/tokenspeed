@@ -226,7 +226,9 @@ def test_mooncake_engine_follows_local_address_family(
     fake_mooncake, hostname, mc_use_ipv6, session_id
 ):
     initialized, _ = fake_mooncake
-    engine = MooncakeTransferEngine(hostname, gpu_id=0, ib_device=None)
+    engine = MooncakeTransferEngine(
+        hostname, gpu_id=0, ib_device=None, page_transfer_mode="native"
+    )
     assert initialized == [(hostname, mc_use_ipv6)]
     assert engine.session_id == session_id
 

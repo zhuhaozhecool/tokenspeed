@@ -80,7 +80,16 @@ def register_drafter(
     )
 
 
+from tokenspeed.runtime.pd.extensions import (
+    register_pd_observer,
+    register_pd_policy,
+    register_pd_server_info,
+)
+
 __all__ = [
+    "register_pd_observer",
+    "register_pd_policy",
+    "register_pd_server_info",
     "register_drafter",
     "ModelProfile",
     "RegisteredModel",

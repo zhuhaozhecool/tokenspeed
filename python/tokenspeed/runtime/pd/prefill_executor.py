@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import time
 
+from tokenspeed.runtime.pd.audit import emit_pd_audit, pd_audit_enabled
 from tokenspeed.runtime.pd.base.bootstrap import BootstrapInfo
 from tokenspeed.runtime.pd.base.status import TransferPoll
 from tokenspeed.runtime.pd.cache_protocol import (
@@ -63,6 +64,16 @@ class DisaggPrefillExecutor:
         )
 
     def _bootstrap(self, request_id, info):
+        if pd_audit_enabled():
+            topology = self.kv_manager.topology
+            emit_pd_audit(
+                "route",
+                role="prefill",
+                global_rank=topology.global_rank,
+                dp_rank=topology.dp_rank,
+                rid=request_id,
+                room=int(info.bootstrap_room),
+            )
         self.senders[request_id] = MooncakeKVSender(
             mgr=self.kv_manager,
             bootstrap_addr=join_host_port(info.bootstrap_host, info.bootstrap_port),

@@ -649,3 +649,22 @@ For orientation, one iteration of `event_loop`:
   cache-owning rank still enters the replica MIN; raising would hang healthy
   peers. Clients are not failed. The D role never prefetches: its admission
   probes Device only.
+
+### PD rendezvous routing
+
+Both PD roles route a request by its bootstrap-room residue. Queue or
+cache-budget policy cannot independently move either peer to another domain.
+This keeps sender/receiver topology consistent before cache transfer starts.
+
+### Optional PD extensions
+
+A registered PD policy can reject remote admission before pages are leased,
+observe commits, and retain completed transfer events before ordinary event
+processing. The executor and scheduler continue to own requests and page leases.
+Held completions must return through the original success/failure path; remote
+writes must be confirmed before a failed request's pages can be reused.
+
+Observation providers receive existing host facts. They must not read device
+tensors or synchronize devices. Serialization, sampling and storage belong to
+the provider. The default path has no provider and performs no observation I/O.
+Registration uses the plugin loader's duplicate checks and rollback.

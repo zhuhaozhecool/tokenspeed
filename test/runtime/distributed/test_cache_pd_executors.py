@@ -598,6 +598,7 @@ def test_terminal_events_clear_transport_room_state(
     decode._admissions = {}
     decode._remote_cache_slots = {}
     decode._remote_cached_tokens = {}
+    decode._remote_cache_context = {}
     decode._remote_bootstrap_logprobs = {}
     decode._remote_spec_candidate_ids = {}
     decode.cache_layout = _layout()
@@ -606,6 +607,9 @@ def test_terminal_events_clear_transport_room_state(
     decode._cache_prefill(admission)
 
     assert len(decode.generate_events()) == 1
+    context = decode.remote_completion_context("request")
+    assert context["room"] == 9
+    assert context["p_cached_tokens"] == remote_hits
     assert decode.pop_remote_cache_slot("request") == 7
     assert decode.pop_remote_cached_tokens("request") == remote_hits
     assert decode.pop_remote_bootstrap_logprob("request") == -0.25
@@ -613,6 +617,7 @@ def test_terminal_events_clear_transport_room_state(
     assert decode._admissions == {}
     assert decode._remote_cache_slots == {}
     assert decode._remote_cached_tokens == {}
+    assert decode._remote_cache_context == {}
     assert decode._remote_bootstrap_logprobs == {}
     assert decode._remote_spec_candidate_ids == {}
     assert decode_manager.cached_tokens_table == {}
@@ -656,12 +661,13 @@ def test_decode_publishes_manifest_through_contract_receiver() -> None:
 
     calls = []
     receiver = SimpleNamespace(
-        prefill=lambda *args, **kwargs: calls.append((args, kwargs))
+        bootstrap_room=9, prefill=lambda *args, **kwargs: calls.append((args, kwargs))
     )
     executor = object.__new__(decode_module.DisaggDecodeExecutor)
     executor.cache_layout = _layout()
     executor.receivers = {"request-0": receiver}
     executor._admissions = {}
+    executor._remote_cache_context = {}
 
     executor._cache_prefill(_op())
 
@@ -1147,10 +1153,14 @@ def test_engine_wrapper_requires_and_forwards_the_page_gathered_write(
     monkeypatch.setitem(sys.modules, "mooncake.engine", fake_module)
     # An engine without the page-gathered WRITE is a wrong install.
     with pytest.raises(RuntimeError, match="batch_transfer_sync_write_pages"):
-        MooncakeTransferEngine("10.0.0.1", gpu_id=0, ib_device=None)
+        MooncakeTransferEngine(
+            "10.0.0.1", gpu_id=0, ib_device=None, page_transfer_mode="native"
+        )
     # With it, bring-up completes and the session id names this rank.
     FakeTransferEngine.batch_transfer_sync_write_pages = lambda self, *a: 0
-    engine = MooncakeTransferEngine("10.0.0.1", gpu_id=0, ib_device="mlx5_0")
+    engine = MooncakeTransferEngine(
+        "10.0.0.1", gpu_id=0, ib_device="mlx5_0", page_transfer_mode="native"
+    )
     assert engine.session_id == "10.0.0.1:4321"
     assert engine.engine.initialized == ("10.0.0.1", "P2PHANDSHAKE", "rdma", "mlx5_0")
 
@@ -1159,6 +1169,7 @@ def test_engine_wrapper_requires_and_forwards_the_page_gathered_write(
     fields = np.zeros((2, 5), dtype=np.int64)
     seen = []
     wrapper = object.__new__(MooncakeTransferEngine)
+    wrapper.page_transfer_mode = "native"
     wrapper.engine = SimpleNamespace(
         batch_transfer_sync_write_pages=lambda session, s, d, f, batch: seen.append(
             ("pages", s, d, f, batch)

@@ -33,6 +33,7 @@ from __future__ import annotations
 from tokenspeed_scheduler import PD
 
 from tokenspeed.runtime.pd.decode_executor import DisaggDecodeExecutor
+from tokenspeed.runtime.pd.extensions import create_pd_policy
 from tokenspeed.runtime.pd.prefill_executor import DisaggPrefillExecutor
 
 
@@ -45,6 +46,16 @@ class PdTransferHooks:
         self._loop = loop
         # Injected, not reached through the loop — see PauseHooks.
         self._device = device
+        self._policy = create_pd_policy(loop, device)
+
+    def admit_remote_prefill(self, request_id, state, bootstrap) -> bool:
+        return self._policy is None or self._policy.admit_remote_prefill(
+            request_id, state, bootstrap
+        )
+
+    def observe_committed(self, request_ids) -> None:
+        if self._policy is not None:
+            self._policy.observe_committed(request_ids)
 
     def record_prefill_usage(self, request_ids: list[str]) -> None:
         """Forward committed host-side usage before remote-decode dispatch.
@@ -76,8 +87,11 @@ class PdTransferHooks:
         if loop.kv_transfer is None:
             return []
 
+        events = loop.kv_transfer.generate_events()
+        if self._policy is not None:
+            events = self._policy.filter_transfer_events(events)
         processed = []
-        for event in loop.kv_transfer.generate_events():
+        for event in events:
             processed.append(event)
             if isinstance(event, PD.SucceededEvent) and isinstance(
                 loop.kv_transfer, DisaggPrefillExecutor
