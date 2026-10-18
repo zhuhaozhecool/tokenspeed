@@ -565,6 +565,7 @@ def test_terminal_events_clear_transport_room_state(
     )
     decode_manager = SimpleNamespace(
         request_status={9: TransferPoll.Success},
+        undrained_rooms=set(),
         failure_records={9: "stale"},
         failure_lock=nullcontext(),
         prefill_response_tracker={9: {0}},

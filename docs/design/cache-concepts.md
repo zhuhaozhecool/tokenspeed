@@ -1998,3 +1998,10 @@ KVStore disabled, using the target router directly. Local offloaded prefill
 and mixed-arena sleep/wake are unsupported. Eager and CUDA-graph decode
 use the same batch, access and accepted-writeback hooks; execution details are
 in `unified_path.md`, "Sparse KV offloading".
+
+### Unconfirmed remote writes
+
+A heartbeat loss or receive timeout does not prove remote WRITEs have drained.
+Decode must retire the worker and arena before those destinations are reused.
+Late success messages do not resurrect terminal rooms. Manifest ownership
+fields keep strict integer and boolean types rather than coercing wire input.

@@ -114,12 +114,17 @@ class MooncakeKVManagerDecode(MooncakeKVManagerBase):
         self.connection_pool: dict[str, dict[str, str | int]] = {}
         self.expected_prefill_ranks_table: dict[int, frozenset[int]] = {}
         self.prefill_response_tracker: dict[int, set[int]] = defaultdict(set)
+        # No remote WRITE drain is implied by a missed heartbeat. Such a
+        # failure must escape polling to the worker fatal path, retaining the
+        # destination pages until the process/arena is retired.
+        self.undrained_rooms: set[int] = set()
 
         self.prefill_parallel_info: dict[str, PrefillParallelInfo] = {}
 
         # If a timeout happens on the decode side, it means decode instances
         # fail to receive the KV Cache transfer done signal after bootstrapping.
-        # These timeout requests should be aborted to release the tree cache.
+        # A timeout is not a cancellation acknowledgement: the worker must
+        # retire its arena rather than release these destinations for reuse.
         self.waiting_timeout = envs.TOKENSPEED_DISAGGREGATION_WAITING_TIMEOUT.get()
         # The status and heartbeat threads read every field above, so publish
         # their sockets only after the manager is fully initialized.
@@ -214,7 +219,11 @@ class MooncakeKVManagerDecode(MooncakeKVManagerBase):
         cached_tokens: int,
         bootstrap_logprob: float | None,
     ) -> None:
-        if bootstrap_room not in self.request_status:
+        if self.request_status.get(bootstrap_room) in (
+            None,
+            TransferPoll.Failed,
+            TransferPoll.Success,
+        ):
             return
         if status == TransferPoll.Success:
             expected_prefill_ranks = self.expected_prefill_ranks_table.get(
@@ -343,6 +352,8 @@ class MooncakeKVManagerDecode(MooncakeKVManagerBase):
                 room,
                 f"Losing connection with prefill instance (bootstrap_addr: {failed_bootstrap_addr})",
             )
+            if status in (TransferPoll.WaitingForInput, TransferPoll.Transferring):
+                self.undrained_rooms.add(room)
             self.kv_transfer_metrics.record_kv_transfer_failure()
             self.update_status(room, TransferPoll.Failed)
             affected_rooms.append(room)
