@@ -363,15 +363,36 @@ class CachePDBlockManifest:
         payload = _load_wire_json(
             raw, name="Cache block manifest", maximum=MAX_CACHE_MANIFEST_WIRE_BYTES
         )
-        return cls(
-            groups=tuple(
-                CachePDGroupBlocks(group["group_id"], tuple(group["block_ids"]))
-                for group in payload["groups"]
-            ),
-            prefix_len=payload["prefix_len"],
-            prompt_len=payload["prompt_len"],
-            state_prefix_cached=bool(payload["state_prefix_cached"]),
+        try:
+            result = cls(
+                groups=tuple(
+                    CachePDGroupBlocks(group["group_id"], tuple(group["block_ids"]))
+                    for group in payload["groups"]
+                ),
+                prefix_len=payload["prefix_len"],
+                prompt_len=payload["prompt_len"],
+                state_prefix_cached=payload["state_prefix_cached"],
+            )
+        except (KeyError, TypeError) as exc:
+            raise CacheContractError("invalid Cache block manifest fields") from exc
+        _validate_manifest_types(result)
+        return result
+
+
+def _validate_manifest_types(manifest: CachePDBlockManifest) -> None:
+    # In particular, bool("false") is True and would silently omit the exact
+    # prompt-end state. Do not coerce values at this ownership boundary.
+    if (
+        type(manifest.prefix_len) is not int
+        or type(manifest.prompt_len) is not int
+        or type(manifest.state_prefix_cached) is not bool
+        or any(
+            type(group.group_id) is not str
+            or any(type(block) is not int for block in group.block_ids)
+            for group in manifest.groups
         )
+    ):
+        raise CacheContractError("Cache block manifest has invalid field types")
 
 
 @dataclass(frozen=True, slots=True)
@@ -490,6 +511,7 @@ def validate_cache_manifest(
     layout: CacheTransferContract,
     peer: str,
 ) -> None:
+    _validate_manifest_types(manifest)
     if not 0 <= manifest.prefix_len < manifest.prompt_len:
         raise CacheContractError(
             f"{peer} manifest requires 0 <= prefix_len < prompt_len, got "

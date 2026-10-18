@@ -1996,3 +1996,11 @@ released, and the client receives a `CapacityAbort` finish. The fixed hot
 partition is reused only after the new owner's PD initialization invalidates
 its metadata. No snapshot store, restore, recovery prefill or extend staging
 is used by offloaded arenas.
+
+### Ascend graph CPU inputs
+
+A captured graph with automatic dispatch and an explicitly empty handler
+record list needs no CPU input update. Unknown versions, manual capture and
+nonempty handlers retain the live-length update. Fresh block-table host stages
+use pinned memory on both CUDA and Ascend; their existing event fences still
+govern overlap ownership.
