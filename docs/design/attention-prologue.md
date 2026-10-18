@@ -319,3 +319,10 @@ rest. A trait the kernel does not declare admits every value, so declare each
 behavioral trait (`has_norm`, `mrope`, `return_kv`, `expanded` and the rest)
 the kernel does not implement for every value. An `override` naming a kernel
 this platform cannot run, or whose traits exclude the request, raises.
+
+### Ascend shared prefill metadata
+
+The build contract passes host-side prefill vectors through the ordinary
+backend construction path. Cached buffer addresses remain stable, while
+request lengths, page IDs and ownership are refreshed for each step.
+The optional native metadata library is selected explicitly at startup.
