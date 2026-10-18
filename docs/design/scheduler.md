@@ -1177,3 +1177,11 @@ lands in the same change as the pin, never a release apart.
   remainder (4). Only the empty-round retraction (2), in a round that builds
   nothing and waits for no finished request, retracts or aborts an exempt
   request.
+
+### Tail-bucket admission ownership
+
+An admission that continues a partially filled tail must charge the owning
+bucket before allocating new parent blocks. Capacity checks use the same
+ownership as allocation; otherwise a shared prefix can make a request appear
+admissible in a bucket that cannot hold its tail. Coordinator regression tests
+cover partial tails, owner continuation and shared-prefix admission.
