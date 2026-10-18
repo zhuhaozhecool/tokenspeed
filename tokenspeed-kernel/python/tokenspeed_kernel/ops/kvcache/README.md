@@ -57,3 +57,12 @@ The residency path uses only CuTe DSL. The former resident/selection sorting,
 binary-search lookup and adjacent-entry miss deduplication have been removed.
 Hash ownership merges duplicate loads while preserving all attention references;
 upstream top-k ordering remains part of the attention numerical contract.
+
+### Ascend request-state rows
+
+Prefill gathers and stores the selected request rows with the common strided
+kernels on Ascend. Index pointer alignment does not select a new binary.
+The common prefill-state tests cover fresh/null rows, shared-prefix ownership
+and strides; `test/npu/test_prefill_state_rows.py` adds alignment reuse,
+changed-input graph replay, masked stores and offsets beyond signed int32.
+The large-offset test requires 12 GiB of free device memory.
