@@ -381,3 +381,31 @@ def test_stale_minimum_cache_usage_state_falls_back_to_round_robin():
 
     assert controller.workers[0].sent == []
     assert controller.workers[1].sent == [request]
+
+
+def test_pd_room_routes_both_legs_under_every_policy(monkeypatch):
+    from tokenspeed.runtime.engine.io_struct import TokenizedGenerateReqInput
+    from tokenspeed.runtime.sampling.sampling_params import SamplingParams
+
+    monkeypatch.setenv("SINGLE_WORKER_ID", "0")
+    for method in LoadBalanceMethod:
+        for role in ("prefill", "decode"):
+            controller = make_controller(method=method)
+            controller.server_args.disaggregation_mode = role
+            controller.dispatching = controller.single_robin_scheduler
+            controller.handle_load_snapshot(snapshot(0, num_running_reqs=0))
+            controller.handle_load_snapshot(snapshot(1, num_running_reqs=100))
+            for room in (101, 102, 103, 104):
+                req = TokenizedGenerateReqInput(
+                    rid=f"pd-{room}",
+                    input_ids=[7, 7, room],
+                    sampling_params=SamplingParams(max_new_tokens=6),
+                    bootstrap_host="prefill",
+                    bootstrap_port=8998,
+                    bootstrap_room=room,
+                    data_parallel_rank=(room + 1) % 2,
+                )
+                controller.dispatch_generate_request(req)
+            assert [x.bootstrap_room for x in controller.workers[0].sent] == [102, 104]
+            assert [x.bootstrap_room for x in controller.workers[1].sent] == [101, 103]
+            assert controller.dp_budget.reservations == {0: 2, 1: 2}

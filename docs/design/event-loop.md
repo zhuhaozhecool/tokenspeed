@@ -645,3 +645,9 @@ For orientation, one iteration of `event_loop`:
   cache-owning rank still enters the replica MIN; raising would hang healthy
   peers. Clients are not failed. The D role never prefetches: its admission
   probes Device only.
+
+### PD rendezvous routing
+
+Both PD roles route a request by its bootstrap-room residue. Queue or
+cache-budget policy cannot independently move either peer to another domain.
+This keeps sender/receiver topology consistent before cache transfer starts.
