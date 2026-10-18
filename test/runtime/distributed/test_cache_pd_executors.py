@@ -24,7 +24,6 @@ from test.runtime.cache_pd_test_utils import group as make_group  # noqa: E402
 from test.runtime.cache_pd_test_utils import layout as make_layout
 from test.runtime.cache_pd_test_utils import operation as make_operation
 from test.runtime.cache_pd_test_utils import segment as make_segment
-
 from tokenspeed.runtime.pd.cache_protocol import (  # noqa: E402
     CacheContractError,
     CachePDBlockManifest,
@@ -421,10 +420,8 @@ def test_rejected_registration_fails_later_request_without_stopping_handler() ->
     aborts = []
     notifications = []
     manager.abort_room = lambda room, reason: aborts.append((room, reason))
-    manager.sync_status_to_decode_endpoint = (
-        lambda endpoint, port, room, status, rank: (
-            notifications.append((endpoint, port, room, status, rank))
-        )
+    manager.sync_status_to_decode_endpoint = lambda endpoint, port, room, status, rank: (
+        notifications.append((endpoint, port, room, status, rank))
     )
     manager.topology = _topology(tp_size=2, tp_rank=1, global_rank=1)
 
@@ -478,10 +475,8 @@ def test_failed_room_fanout_never_restores_state(
             manager.request_status.__setitem__(9, TransferPoll.Failed)
         )
     notifications = []
-    manager.sync_status_to_decode_endpoint = (
-        lambda endpoint, port, room, status, rank: (
-            notifications.append((endpoint, port, room, status, rank))
-        )
+    manager.sync_status_to_decode_endpoint = lambda endpoint, port, room, status, rank: (
+        notifications.append((endpoint, port, room, status, rank))
     )
 
     manager._handle_bootstrap_message(
@@ -495,7 +490,6 @@ def test_failed_room_fanout_never_restores_state(
 
 def test_cache_factory_exposes_only_typed_arena() -> None:
     import torch
-
     from tokenspeed.runtime.pd.factory import get_kv_args
 
     layout = _layout()
@@ -565,6 +559,7 @@ def test_terminal_events_clear_transport_room_state(
     )
     decode_manager = SimpleNamespace(
         request_status={9: TransferPoll.Success},
+        undrained_rooms=set(),
         failure_records={9: "stale"},
         failure_lock=nullcontext(),
         prefill_response_tracker={9: {0}},
@@ -1028,10 +1023,14 @@ def test_engine_wrapper_requires_and_forwards_the_page_gathered_write(
     monkeypatch.setitem(sys.modules, "mooncake.engine", fake_module)
     # An engine without the page-gathered WRITE is a wrong install.
     with pytest.raises(RuntimeError, match="batch_transfer_sync_write_pages"):
-        MooncakeTransferEngine("10.0.0.1", gpu_id=0, ib_device=None)
+        MooncakeTransferEngine(
+            "10.0.0.1", gpu_id=0, ib_device=None, page_transfer_mode="native"
+        )
     # With it, bring-up completes and the session id names this rank.
     FakeTransferEngine.batch_transfer_sync_write_pages = lambda self, *a: 0
-    engine = MooncakeTransferEngine("10.0.0.1", gpu_id=0, ib_device="mlx5_0")
+    engine = MooncakeTransferEngine(
+        "10.0.0.1", gpu_id=0, ib_device="mlx5_0", page_transfer_mode="native"
+    )
     assert engine.session_id == "10.0.0.1:4321"
     assert engine.engine.initialized == ("10.0.0.1", "P2PHANDSHAKE", "rdma", "mlx5_0")
 
@@ -1040,11 +1039,11 @@ def test_engine_wrapper_requires_and_forwards_the_page_gathered_write(
     fields = np.zeros((2, 5), dtype=np.int64)
     seen = []
     wrapper = object.__new__(MooncakeTransferEngine)
+    wrapper.page_transfer_mode = "native"
     wrapper.engine = SimpleNamespace(
-        batch_transfer_sync_write_pages=lambda session, s, d, f, batch: seen.append(
-            ("pages", s, d, f, batch)
+        batch_transfer_sync_write_pages=lambda session, s, d, f, batch: (
+            seen.append(("pages", s, d, f, batch)) or 0
         )
-        or 0
     )
     assert (
         wrapper.batch_transfer_sync_pages("s", src, dst, fields, max_batch_size=4096)
@@ -1154,7 +1153,6 @@ def test_flatten_packed_copy_emits_contiguous_dest_rows() -> None:
 
 def test_pack_scratch_device_uses_explicit_gpu_index() -> None:
     import torch
-
     from tokenspeed.runtime.pd.mooncake.pack import PrefillPackScratch, scratch_device
 
     assert scratch_device(3) == torch.device("cuda", 3)
@@ -1169,7 +1167,6 @@ def test_pack_scratch_keeps_old_buffer_when_growth_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import torch
-
     from tokenspeed.runtime.pd.mooncake.pack import PrefillPackScratch
 
     events: list[tuple] = []
@@ -1229,7 +1226,6 @@ def test_pack_scratch_keeps_old_buffer_when_register_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import torch
-
     from tokenspeed.runtime.pd.mooncake.pack import PrefillPackScratch
 
     events: list[tuple] = []
@@ -1274,7 +1270,6 @@ def test_materialize_falls_back_when_register_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import torch
-
     from tokenspeed.runtime.pd.mooncake.pack import PackedCopy, PrefillPackScratch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
@@ -1787,8 +1782,9 @@ def test_kvp_pd_copies_logical_history_between_independently_allocated_pages(
             [[1, 4, 6, 8 * destination.shard_count(spec.group_id) + 2 + index, 2]],
             dtype=np.int32,
         )
-    source_op, destination_op = make_operation(source_tables), make_operation(
-        destination_tables
+    source_op, destination_op = (
+        make_operation(source_tables),
+        make_operation(destination_tables),
     )
     src_manifest = build_cache_block_manifest(
         source_op,
@@ -2045,6 +2041,56 @@ def test_transfer_blocks_keep_only_owned_pages_translated_to_local() -> None:
     )
     assert item.src_pages.tolist() == [1, 2, 3]
     assert item.dst_pages.tolist() == [10, 12, 14]
+
+
+def test_transfer_audit_counts_only_selected_owner_payload(tmp_path, monkeypatch):
+    import json
+
+    from tokenspeed.runtime.pd.audit import TransferAudit
+    from tokenspeed.runtime.pd.transfer_plan import CachePageOwnerFilter
+
+    monkeypatch.setenv("TOKENSPEED_PD_AUDIT_DIR", str(tmp_path))
+    source_layout = _sharded_history_layout(2)
+    destination_layout = _sharded_history_layout(1)
+    manager, _ = _recording_transfer_manager(source_layout, 0x1000)
+    audit = TransferAudit(
+        room=42,
+        global_rank=1,
+        dp_rank=0,
+        source_tp_rank=1,
+        destination_tp_rank=0,
+    )
+    (item,) = manager._cache_transfer_blocks(
+        dst_tp_rank=0,
+        dst_ptr=0x2000,
+        src_block_manifest=_single_group_block_manifest("history", (1, 2, 3, 4, 5, 6)),
+        dst_block_manifest=_single_group_block_manifest(
+            "history", (10, 11, 12, 13, 14, 15)
+        ),
+        owner_filters={"history": CachePageOwnerFilter(1, 2)},
+        dst_cache_layout=destination_layout,
+        audit=audit,
+    )
+    audit.done(0)
+    payload = sum(
+        length
+        for _, _, length in _expand_page_fields(
+            item.src_pages, item.dst_pages, item.fields
+        )
+    )
+    records = [
+        json.loads(line)
+        for path in tmp_path.glob("*.jsonl")
+        for line in path.read_text().splitlines()
+    ]
+    plan, done = records
+    assert plan["event"] == "transfer_plan"
+    assert plan["source_owner"] == 1
+    assert plan["destination_owner"] == 0
+    assert plan["pages"] == 3
+    assert plan["planned_payload_bytes"] == payload == 48
+    assert done["submitted_bytes"] == payload
+    assert done["transfer_id"] == plan["transfer_id"]
 
 
 def test_transfer_blocks_apply_owner_filter_to_layerwise_selection() -> None:

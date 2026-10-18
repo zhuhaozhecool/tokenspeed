@@ -17,6 +17,11 @@ metadata pointer in a graph. Model forward graph replay is unchanged.
 
 ## Sparse KV offloading
 
+On Ascend, page-field clearing bounds the flattened launch grid to 65535
+programs and strides over additional page/field pairs. Long-context admission
+therefore clears every requested page without exceeding the runtime launch
+limit. Page/field counts remain runtime parameters.
+
 `offload.py` is the runtime boundary. NVIDIA uses the registered
 `cute_dsl_offload_materialize` implementation and CuTe DSL row helpers.
 The private `_cute_dsl` Python package ships in both wheels and source archives.
@@ -57,3 +62,30 @@ The residency path uses only CuTe DSL. The former resident/selection sorting,
 binary-search lookup and adjacent-entry miss deduplication have been removed.
 Hash ownership merges duplicate loads while preserving all attention references;
 upstream top-k ordering remains part of the attention numerical contract.
+
+### Ascend DSA metadata
+
+`compact_kvp_dsa_metadata` refreshes owned kernel pages and the sequence,
+initial-window and local-window token counts in one asynchronous AscendC
+launch. It writes caller-owned INT32 buffers in place and retains allocated
+reserve pages in source order. Every Graph replay reads the current virtual
+page table and endpoints; no request-dependent state is cached on the host.
+
+Build `cann-flash-ops/experimental/kvp_metadata_v1` from the Ascend kernel
+package and set `TOKENSPEED_DSA_METADATA_LIBRARY` to the resulting
+`libkvp_metadata.so` before warmup. This explicit library selection also
+enables native compaction in `compact_kvp_pages`; without it the existing
+Ascend implementation remains available. Warm up the selected library before
+Graph capture.
+
+`kvp_metadata_v2` also builds `libkvp_metadata_v2.so` with native cache-write
+slot translation. Select it with `TOKENSPEED_DSA_SLOTS_LIBRARY`; the same
+library can serve `TOKENSPEED_DSA_METADATA_LIBRARY`. A virtual slot maps to
+its owning rank's physical slot, or -1 for null, out-of-range and foreign
+slots. This sentinel is local to Ascend scatter; the common cache-placement
+API still returns a separate owner mask. INT32 and INT64 slots are supported.
+
+Both direct-launch helpers require `TASK_QUEUE_ENABLE=0` and warmup before
+capture. The runtime memoizes outputs only within one forward; metadata
+refresh and pool rebinding invalidate them. Replay recomputes current page
+ownership, lengths and slots at stable output addresses.

@@ -1875,3 +1875,30 @@ released, and the client receives a `CapacityAbort` finish. The fixed hot
 partition is reused only after the new owner's PD initialization invalidates
 its metadata. No snapshot store, restore, recovery prefill or extend staging
 is used by offloaded arenas.
+
+### Prefill sampling positions on Ascend
+
+Sampling offsets must use storage separate from the accepted-frontier table.
+The torch_npu 2.9 build used by this experiment mutates the input of the
+out-of-place `index_copy` operation. Clone the table explicitly and update
+that clone so prefill sampling cannot advance runtime cache lengths.
+
+
+### Task-local independent Decode experiment
+
+The isolated benchmark worktree can enable
+`TOKENSPEED_STANDALONE_DECODE_BENCHMARK=reuse-cache` only with the PD Decode
+role. The arena initializes cache storage at startup; later admissions reuse
+its payload, including writes by previous synthetic requests. The task-owned
+provider rewrites KDA checkpoint lengths and uses the normal PD landing event.
+In this explicit experiment only, scheduler page clearing preserves its stream
+fence and completion event but performs no payload writes. It preserves
+the regular scheduler, DUMMY verification and graph path. It reports zero
+cached tokens and provides no evidence of real Prefill or PD transfer.
+The provider lives in the benchmark scripts directory and is not a supported
+serving transport. Reused synthetic state is not a matching prompt cache;
+record its effect on routing as a measurement limitation.
+
+### Task Lazy KDA adapter: live state tables
+
+The scheduler state table may contain only `actual_bs` rows, while graph buffers have `bs` rows. The Lazy adapter copies live input/output block IDs into persistent buffers and explicitly zeros the padded tail. Padded request slots remain -1 and inactive; prepare, verify and commit must not touch their cache payload. Graph replay regression covers live table sizes 1, 3, 0, 1 with padded size 4.

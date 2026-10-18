@@ -8,8 +8,11 @@ from tokenspeed.runtime.distributed.process_group_manager import process_group_m
 from tokenspeed.runtime.engine.io_struct import (
     FlushCacheReqInput,
     FlushCacheReqOutput,
+    MsgpackDecoder,
+    MsgpackEncoder,
     UpdateWeightsFromDistributedReqInput,
     UpdateWeightsFromDistributedReqOutput,
+    ipc_message_union,
 )
 from tokenspeed.runtime.engine.request_handler import RequestHandler
 from tokenspeed.runtime.engine.scheduler_control_client import (
@@ -20,7 +23,7 @@ from tokenspeed.runtime.entrypoints.engine import Engine
 from tokenspeed.runtime.utils.server_args import ServerArgs
 
 
-def _real_handler(server_args, *, can_clear_cache_fn, clear_cache_fn=None, device):
+def _real_handler(server_args, *, can_clear_cache_fn, clear_cache_fn=None, device, global_rank=0):
     """Construct a real RequestHandler for unit tests.
 
     Only the two collaborators the test host genuinely lacks are patched out:
@@ -30,7 +33,7 @@ def _real_handler(server_args, *, can_clear_cache_fn, clear_cache_fn=None, devic
     """
     # ServerArgs leaves the mapping rank-less; the launcher assigns it per
     # rank (see entrypoints/engine.py), so the single rank here takes 0.
-    server_args.mapping.rank = 0
+    server_args.mapping.rank = global_rank
     with (
         mock.patch(
             "tokenspeed.runtime.engine.request_handler.get_tokenizer",
@@ -77,6 +80,23 @@ class TestRequestHandlerFlushCache:
                 handler.clear_cache_fn.assert_called_once_with()
                 output = handler.send_func.send_pyobj.call_args.args[0]
                 assert (output.success) == (success)
+                assert output.dp_rank == 0
+
+    def test_reports_actual_second_dp_domain(self):
+        device = mock.Mock()
+        device.delete_l3_namespace.return_value = True
+        handler = _real_handler(
+            ServerArgs(model="x", attn_tp_size=1, data_parallel_size=2),
+            can_clear_cache_fn=lambda: True,
+            clear_cache_fn=lambda: True,
+            device=device,
+            global_rank=1,
+        )
+        with mock.patch.object(torch.distributed, "all_reduce"):
+            handler.process_requests([FlushCacheReqInput()])
+        output = handler.send_func.send_pyobj.call_args.args[0]
+        assert output.success
+        assert output.dp_rank == 1
 
     def test_failed_preflight_does_not_clear(self):
         groups_seen = []
@@ -713,6 +733,15 @@ class TestEngineStampsL3Version:
 
 
 class TestCombinedFlushCacheOutput:
+    def test_actual_domain_receipts_survive_engine_ipc(self):
+        output = combined_flush_cache_output([
+            FlushCacheReqOutput(success=True, dp_rank=0),
+            FlushCacheReqOutput(success=False, dp_rank=1),
+        ])
+        decoded = MsgpackDecoder(ipc_message_union()).decode(MsgpackEncoder().encode(output))
+        assert decoded == output
+        assert [(domain.dp_rank, domain.success) for domain in decoded.domains] == [(0, True), (1, False)]
+
     def test_empty_results_are_failure(self):
         output = combined_flush_cache_output([])
         assert not (output.success)
@@ -720,20 +749,29 @@ class TestCombinedFlushCacheOutput:
     def test_ands_every_dp_replica(self):
         output = combined_flush_cache_output(
             [
-                FlushCacheReqOutput(success=True),
-                FlushCacheReqOutput(success=False),
+                FlushCacheReqOutput(success=True, dp_rank=0),
+                FlushCacheReqOutput(success=False, dp_rank=1),
             ]
         )
         assert not (output.success)
+        assert [(domain.dp_rank, domain.success) for domain in output.domains] == [(0, True), (1, False)]
 
     def test_all_success_is_success(self):
         output = combined_flush_cache_output(
             [
-                FlushCacheReqOutput(success=True),
-                FlushCacheReqOutput(success=True),
+                FlushCacheReqOutput(success=True, dp_rank=1),
+                FlushCacheReqOutput(success=True, dp_rank=0),
             ]
         )
         assert output.success
+        assert [domain.dp_rank for domain in output.domains] == [0, 1]
+
+    def test_missing_duplicate_or_unknown_actual_domain_is_failure(self):
+        for ranks in [(None, None), (0, 0), (0, 2)]:
+            output = combined_flush_cache_output([
+                FlushCacheReqOutput(success=True, dp_rank=rank) for rank in ranks
+            ])
+            assert not output.success
 
 
 @pytest.mark.asyncio(loop_scope="function")
@@ -744,8 +782,8 @@ class TestSchedulerControlFlushCache:
         async def fake_comm(req):
             del req
             return [
-                FlushCacheReqOutput(success=True),
-                FlushCacheReqOutput(success=False),
+                FlushCacheReqOutput(success=True, dp_rank=0),
+                FlushCacheReqOutput(success=False, dp_rank=1),
             ]
 
         client.flush_cache_communicator = fake_comm
@@ -758,8 +796,8 @@ class TestSchedulerControlFlushCache:
         async def fake_comm(req):
             del req
             return [
-                FlushCacheReqOutput(success=True),
-                FlushCacheReqOutput(success=True),
+                FlushCacheReqOutput(success=True, dp_rank=0),
+                FlushCacheReqOutput(success=True, dp_rank=1),
             ]
 
         client.flush_cache_communicator = fake_comm

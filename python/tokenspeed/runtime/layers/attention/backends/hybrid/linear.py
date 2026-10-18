@@ -191,6 +191,18 @@ class HybridLinearAttnBackend(AttentionBackend):
             max_bs, draft_token_num
         )
 
+    def preallocate_history_gather_workspace(self, max_model_len: int) -> int:
+        # Only the paged full-attention child gathers token histories.
+        return self.full_attn_backend.preallocate_history_gather_workspace(
+            max_model_len
+        )
+
+    def history_gather_workspace(self):
+        return self.full_attn_backend.history_gather_workspace()
+
+    def adopt_history_gather_workspace(self, workspace) -> None:
+        self.full_attn_backend.adopt_history_gather_workspace(workspace)
+
     def register_step_counter(self, step_counter):
         # Hybrid layerwise transfer needs one global step per model layer,
         # including both full-attention and mamba layers. Normal attention
@@ -336,9 +348,9 @@ class HybridLinearAttnBackend(AttentionBackend):
         # Collapse the GDN scan's batched [1, T, Hv, D] to z-shaped (see docstring).
         if ret is not None and ret.dim() == 4:
             # Strictly [1, T, Hv, D]: a genuine B>1 must fail loud, not corrupt the handoff.
-            assert (
-                ret.shape[0] == 1
-            ), f"GDN scan batched rank expected leading 1, got {ret.shape}"
+            assert ret.shape[0] == 1, (
+                f"GDN scan batched rank expected leading 1, got {ret.shape}"
+            )
             ret = ret.flatten(0, 1)
         return ret
 

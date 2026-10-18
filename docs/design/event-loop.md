@@ -629,3 +629,11 @@ For orientation, one iteration of `event_loop`:
   cache-owning rank still enters the replica MIN; raising would hang healthy
   peers. Clients are not failed. The D role never prefetches: its admission
   probes Device only.
+
+## Explicit benchmark cohort receive gate
+
+The opt-in [benchmark cohort gate](benchmark-cohort.md) holds a completed
+`RemotePrefillDoneEvent` on the control plane before its original tail advance.
+It leaves the C++ request in its existing PD-pinned state and submits no model
+work of its own. Planned forwards and remote transfers are never withheld.
+The benchmark reports this additional admission wait in TTFT.

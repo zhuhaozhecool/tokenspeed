@@ -863,8 +863,16 @@ class FlushCacheReqInput(BaseReq, kw_only=True):
     pass
 
 
+class FlushCacheDomain(msgspec.Struct, kw_only=True):
+    dp_rank: int
+    success: bool
+
+
 class FlushCacheReqOutput(BaseReq, kw_only=True):
     success: bool
+    # Append-only IPC fields: None means an old worker supplied no domain proof.
+    dp_rank: int | None = None
+    domains: list[FlushCacheDomain] = msgspec.field(default_factory=list)
 
 
 # How a pause should treat in-flight requests.

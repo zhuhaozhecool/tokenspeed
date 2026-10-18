@@ -31,6 +31,8 @@ state.
 
 from __future__ import annotations
 
+import os
+
 from tokenspeed.runtime.epd.entities import EmbeddingManagerArgs
 from tokenspeed.runtime.pd.base.bootstrap import DisaggBootstrapServerBase
 from tokenspeed.runtime.pd.base.manager import DisaggManagerBase
@@ -66,6 +68,9 @@ class MooncakeEmbeddingManagerBase(DisaggManagerBase):
             hostname=get_local_ip_by_remote(),
             gpu_id=embedding_args.gpu_id,
             ib_device=embedding_args.ib_device,
+            page_transfer_mode=os.environ.get(
+                "TOKENSPEED_MOONCAKE_PAGE_TRANSFER", "native"
+            ),
         )
         super().__init__(engine=engine)
 

@@ -192,7 +192,9 @@ def test_abort_uses_the_output_marker() -> None:
     assert calls == [("request-0", {"notify_client": True})]
 
 
-@pytest.mark.parametrize("exit_kind", ["sigterm", "return", "system_exit"])
+@pytest.mark.parametrize(
+    "exit_kind", ["sigterm", "return", "system_exit", "transfer_failure"]
+)
 def test_run_event_loop_reports_exit_and_finally_closes(
     monkeypatch: pytest.MonkeyPatch,
     exit_kind: str,
@@ -249,6 +251,10 @@ def test_run_event_loop_reports_exit_and_finally_closes(
 
         def event_loop(self) -> None:
             trace.append("loop_enter")
+            if exit_kind == "transfer_failure":
+                from tokenspeed.runtime.pd.mooncake.entities import KVTransferError
+
+                raise KVTransferError(9, "unconfirmed cache WRITEs; retire worker")
             assert not self.shutdown_event.is_set()
             if exit_kind == "system_exit":
                 raise SystemExit(0)
@@ -308,6 +314,12 @@ def test_run_event_loop_reports_exit_and_finally_closes(
         assert raised.value.code == 0
         assert trace == ["construct", "freeze_gc", "loop_enter", "close"]
         assert exit_logs[0][1][0] is SystemExit
+    elif exit_kind == "transfer_failure":
+        event_loop_module.run_event_loop(server_args, object(), pipe_writer)
+        # The worker exits its loop and signals the supervisor. It cannot
+        # schedule a new request or recycle the admitted destination arena.
+        assert trace == ["construct", "freeze_gc", "loop_enter", "close"]
+        assert exit_logs[0][1] is None
     else:
         event_loop_module.run_event_loop(server_args, object(), pipe_writer)
         assert trace == [
@@ -325,7 +337,9 @@ def test_run_event_loop_reports_exit_and_finally_closes(
         if exit_kind == "sigterm"
         else "shutdown_requested=False signal=None"
     ) in exit_logs[0][0]
-    assert parent_signals == []
+    assert parent_signals == (
+        [signal.SIGUSR1] if exit_kind == "transfer_failure" else []
+    )
     assert len(pipe_writer.messages) == 1
     assert pipe_writer.messages[0]["status"] == "ready"
     assert signal_calls[0][0] == signal.SIGTERM

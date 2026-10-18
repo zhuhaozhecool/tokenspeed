@@ -89,6 +89,23 @@ def get_is_cuda_graph_phase() -> bool:
     return _is_cuda_graph_phase
 
 
+def _update_npu_graph_cpu_inputs(graph, seq_lens):
+    """Avoid a device read only when capture recorded no CPU update handlers."""
+    mode = getattr(graph, "graph_dispatch_mode", None)
+    records = getattr(mode, "graph_dispatch_records", None)
+    if (
+        getattr(graph, "auto_dispatch_capture", None) is True
+        and isinstance(records, (list, tuple))
+        and not records
+    ):
+        return
+    # Unknown framework versions and registered handlers retain exact live
+    # lengths and the original update path.
+    graph.update(
+        cpu_update_input=[{"actual_seq_lengths_kv": seq_lens.to("cpu").tolist()}]
+    )
+
+
 @contextmanager
 def freeze_gc(enable_cudagraph_gc: bool):
     """
@@ -1147,11 +1164,7 @@ class ForwardStepRunner:
             if self._graph_debug:
                 self._verify_graph_metadata(graph_key)
             if self.device == "npu":
-                graph.update(
-                    cpu_update_input=[
-                        {"actual_seq_lengths_kv": seq_lens.to("cpu").tolist()}
-                    ]
-                )
+                _update_npu_graph_cpu_inputs(graph, seq_lens)
             if self._expert_load_rows is not None:
                 # Every rank replays the same padded batch; the live rows are
                 # the DP-gathered live counts (this rank's own without DP).

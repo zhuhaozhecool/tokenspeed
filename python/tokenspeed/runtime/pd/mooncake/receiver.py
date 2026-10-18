@@ -316,6 +316,18 @@ class MooncakeKVReceiver:
     def poll(self) -> TransferPoll:
         if self.conclude_state is None:
             status = self.kv_mgr.check_status(self.bootstrap_room)
+            if self.bootstrap_room in self.kv_mgr.undrained_rooms or (
+                status == TransferPoll.Failed and self.init_time is not None
+            ):
+                # Raising reaches run_event_loop's fatal/SIGUSR1 path. Returning
+                # Failed would emit a scheduler FailedEvent and immediately
+                # recycle pages that the disconnected peer may still write.
+                raise KVTransferError(
+                    self.bootstrap_room,
+                    "Cache transfer failed with unconfirmed cache WRITEs; "
+                    "retiring Decode worker before destination reuse",
+                    self.bootstrap_addr,
+                )
             if status in (TransferPoll.Success, TransferPoll.Failed):
                 self.conclude_state = status
             elif status == TransferPoll.WaitingForInput:
@@ -334,8 +346,13 @@ class MooncakeKVReceiver:
                             self.bootstrap_room,
                             f"Request {self.bootstrap_room} timed out after {elapsed:.1f}s in TransferPoll.WaitingForInput",
                         )
-                        self.conclude_state = TransferPoll.Failed
-                        return TransferPoll.Failed
+                        self.kv_mgr.undrained_rooms.add(self.bootstrap_room)
+                        raise KVTransferError(
+                            self.bootstrap_room,
+                            "Cache receive timed out with unconfirmed WRITEs; "
+                            "retiring Decode worker before destination reuse",
+                            self.bootstrap_addr,
+                        )
             elif status == TransferPoll.Transferring:
                 logger.warning(
                     f"Req(room={self.bootstrap_room!s}) in Transferring, which is "
@@ -353,8 +370,11 @@ class MooncakeKVReceiver:
         self.kv_mgr.bootstrap_token_table.pop(self.bootstrap_room, None)
         self.kv_mgr.spec_candidate_ids_table.pop(self.bootstrap_room, None)
         self.kv_mgr.cached_tokens_table.pop(self.bootstrap_room, None)
+        self.kv_mgr.bootstrap_logprob_table.pop(self.bootstrap_room, None)
         self.kv_mgr._pending_bootstrap_token_table.pop(self.bootstrap_room, None)
         self.kv_mgr._pending_spec_candidate_ids_table.pop(self.bootstrap_room, None)
+        self.kv_mgr._pending_bootstrap_logprob_table.pop(self.bootstrap_room, None)
+        self.kv_mgr.undrained_rooms.discard(self.bootstrap_room)
         with self.kv_mgr.failure_lock:
             self.kv_mgr.failure_records.pop(self.bootstrap_room, None)
         with self.kv_mgr.connection_lock:

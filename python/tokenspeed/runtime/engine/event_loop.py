@@ -880,6 +880,8 @@ class EventLoop:
             if self._device.role is DeviceRole.PD_DECODE:
                 # The prompt was computed on the prefill node.
                 state.computed_length = state.input_length
+                if not self._pd_hooks.admit_cohort_request(spec.request_id, state, bootstrap):
+                    continue
             self.output_processor.register(spec.request_id, state)
             # EPD prefill: an encode-routed request is staged OUT of the
             # scheduler until its embeddings arrive; its P->D sender
@@ -974,6 +976,7 @@ class EventLoop:
         )
 
         self._pd_hooks.record_prefill_usage(forward_op.request_ids)
+        self._pd_hooks.observe_committed(forward_op.request_ids)
 
         # Fold committed tokens into the decode throughput window (host-side
         # reads of the already-synced result; no GPU sync).

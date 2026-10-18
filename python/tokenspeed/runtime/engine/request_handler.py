@@ -621,7 +621,12 @@ class RequestHandler:
         if want_flush:
             flush_success = self._try_clear_replica_cache()
         for _ in range(pending_flush_outputs):
-            self.send_func.send_pyobj(FlushCacheReqOutput(success=flush_success))
+            self.send_func.send_pyobj(
+                FlushCacheReqOutput(
+                    success=flush_success,
+                    dp_rank=self.server_args.mapping.attn.dp_rank,
+                )
+            )
         return flush_success, ready_op, ready_internal
 
     def _complete_weight_update(self, recv_req, *, flush_success: bool) -> None:

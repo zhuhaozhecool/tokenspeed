@@ -405,6 +405,17 @@ class DataParallelController:
         here is a defensive backstop — this fire-and-forget loop must fall
         back to the normal policy on a bad pin, never raise.
         """
+        if self.server_args.disaggregation_mode != "null":
+            # Both P and D must follow the same rendezvous residue even under
+            # shortest-queue, cache-budget, or SINGLE_WORKER_ID policies.
+            rank = req.bootstrap_room % len(self.workers)
+            self.workers[rank].send_pyobj(req)
+            self.dp_budget.dispatch(pinned_rank=rank)
+            logger.debug(
+                f"PD route request={req.rid} room={req.bootstrap_room} "
+                f"role={self.server_args.disaggregation_mode} dp_rank={rank}"
+            )
+            return
         rank = getattr(req, "data_parallel_rank", None)
         if rank is not None and self.server_args.disaggregation_mode == "null":
             # bool/float/list must degrade here, not raise mid-comparison.
@@ -424,6 +435,12 @@ class DataParallelController:
         self.dispatching(req)
 
     def round_robin_scheduler(self, req: Req):
+        if (
+            os.environ.get("TOKENSPEED_STANDALONE_DECODE_BENCHMARK") == "reuse-cache"
+            and req.bootstrap_room is None
+        ):
+            req.bootstrap_room = self.round_robin_counter
+            self.round_robin_counter = (self.round_robin_counter + 1) % len(self.workers)
         if self.server_args.disaggregation_mode == "null":
             self.workers[self.round_robin_counter].send_pyobj(req)
             self.round_robin_counter = (self.round_robin_counter + 1) % len(

@@ -20,6 +20,8 @@
 
 from __future__ import annotations
 
+import os
+
 from tokenspeed.runtime.metrics.collector import KVTransferMetrics
 from tokenspeed.runtime.pd.base.bootstrap import DisaggBootstrapServerBase
 from tokenspeed.runtime.pd.base.manager import DisaggManagerBase
@@ -70,6 +72,9 @@ class MooncakeKVManagerBase(DisaggManagerBase):
             hostname=get_local_ip_by_remote(),
             gpu_id=kv_args.gpu_id,
             ib_device=kv_args.ib_device,
+            page_transfer_mode=os.environ.get(
+                "TOKENSPEED_MOONCAKE_PAGE_TRANSFER", "native"
+            ),
         )
         super().__init__(engine=engine)
 

@@ -75,8 +75,9 @@ class PageFieldCopies:
     ``(src_base, src_stride, dst_base, dst_stride, length)`` rows; descriptor
     ``(f, i)`` copies ``length`` bytes from ``src_base + src_pages[i] *
     src_stride`` to ``dst_base + dst_pages[i] * dst_stride``. Mooncake's
-    ``batch_transfer_sync_write_pages`` consumes this shape directly, so a
-    group is one call with no descriptor built on the host. Never packed.
+    ``batch_transfer_sync_write_pages`` consumes this shape directly. The
+    native path builds no descriptors on the host; the explicitly selected
+    compatibility path expands bounded ordinary WRITE batches. Never packed.
     """
 
     src_pages: np.ndarray

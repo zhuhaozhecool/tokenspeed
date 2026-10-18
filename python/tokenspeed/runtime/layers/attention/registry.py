@@ -45,7 +45,10 @@ from tokenspeed.runtime.layers.attention.configs.deepseek_v41 import (
 from tokenspeed.runtime.layers.attention.configs.dots3_note import (
     Dots3NoteAttentionConfig,
 )
-from tokenspeed.runtime.layers.attention.configs.dsa import DSAConfig
+from tokenspeed.runtime.layers.attention.configs.dsa import (
+    DSAConfig,
+    uses_ascend_dsa_prefill_q8,
+)
 from tokenspeed.runtime.layers.attention.configs.linear_attn import (
     LinearAttnConfig,
     Mamba2Config,
@@ -1131,7 +1134,7 @@ def _prepare_fixed_workspaces(
         if draft_backend is not None:
             actual_bytes += draft_backend.fixed_workspace_bytes()
         allocated = True
-    if config.qcp_size > 1:
+    if config.qcp_size > 1 or uses_ascend_dsa_prefill_q8(config):
         actual_bytes += backend.preallocate_history_gather_workspace(config.context_len)
         allocated = True
         if draft_backend is not None:
@@ -1277,6 +1280,12 @@ def create_attn_components(
             ),
         )
         softmax_attn = resolved_softmax
+    # Hybrid construction first uses the wrapper name. Reserve the selected
+    # leaf's workspace only after its actual backend name has been restored.
+    if uses_ascend_dsa_prefill_q8(config):
+        config = dataclasses.replace(
+            config, prefill_query_workspace_tokens=int(server_args.max_prefill_tokens)
+        )
     draft_attn_config = (
         _create_attn_config(server_args, draft_model_config, is_draft=True)
         if draft is not None and not draft.is_dspark

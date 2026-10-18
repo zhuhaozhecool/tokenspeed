@@ -21,6 +21,15 @@ records every Python package mutation needed by this Ascend path, including the
 TokenSpeed applications should continue to import operators from
 `tokenspeed-kernel`; it owns registration and dispatch to this package.
 
+The DSA KVP attention adapter preserves the native SFAD limit of 1024 request
+spans per invocation. KVP prefill represents each causal query as its own
+one-token span, so larger prefill chunks call SFAD in batches of at most1024
+query rows. Only query ends are rebased; visible KV lengths, page-table rows,
+sparse selections, and rank-major heads retain their original meaning. Cache
+writes and index selection run once for the original chunk, and communication
+and partial merging still run once after the complete attention output is
+assembled. Decode batches within the native limit keep their original call.
+
 The Ascend plugin's explicit prefill composition can prepare a
 `W4A4GroupedPlan` from the existing fused W4A4 weight plan. It shares NZ
 weights, encodes official GMM scales once, and executes Cube FlatQuant before
@@ -79,3 +88,6 @@ Verify the gRPC servicer and the source paths together:
 PYTHONPATH="${PWD}/python:${PWD}/tokenspeed-kernel/python:${PWD}/tokenspeed-kernel-npu/python:${PYTHONPATH:-}" \
     python -m smg_grpc_servicer.tokenspeed --help
 ```
+
+For DSA operator contracts, tests and synthetic benchmarks, see the
+[operator notes](python/tokenspeed_kernel_npu/ops/dsa_rope.md).

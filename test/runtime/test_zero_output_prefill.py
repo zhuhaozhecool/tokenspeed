@@ -222,7 +222,8 @@ def test_sampling_preserves_request_parameters_and_shared_outputs(
         )
 
 
-def test_prefill_sample_offset_ignores_how_the_prompt_was_split():
+@pytest.mark.parametrize("device", ["cpu", "npu"])
+def test_prefill_sample_offset_ignores_how_the_prompt_was_split(device):
     """A seeded request's first token must not depend on its prefix-cache hit.
 
     The pool samplers key a row's noise on (seed, valid_cache_lengths[pool]).
@@ -231,6 +232,10 @@ def test_prefill_sample_offset_ignores_how_the_prompt_was_split():
     prefix-cache hit and its last chunk all have to land on the
     same offset: the last prompt position, one below the first decode's.
     """
+    if device == "npu":
+        pytest.importorskip("torch_npu")
+        if not torch.npu.is_available():
+            pytest.skip("NPU is unavailable")
     info_cls = load_symbol(
         RUNTIME + "sampling/sampling_batch_info.py", "SamplingBatchInfo"
     )
@@ -238,13 +243,13 @@ def test_prefill_sample_offset_ignores_how_the_prompt_was_split():
     prompt = 100
     seen = set()
     for prefix in (0, 64, 96, 99):
-        cache_lengths = torch.zeros(8, dtype=torch.int32)
+        cache_lengths = torch.zeros(8, dtype=torch.int32, device=device)
         cache_lengths[5] = prefix
         cache_lengths[2] = 41  # another request's decode frontier stays put
         info = info_cls(
-            req_pool_indices=torch.tensor([5]), valid_cache_lengths=cache_lengths
+            req_pool_indices=torch.tensor([5], device=device), valid_cache_lengths=cache_lengths
         )
-        out = offsets(info, torch.tensor([prompt - prefix], dtype=torch.int32))
+        out = offsets(info, torch.tensor([prompt - prefix], dtype=torch.int32, device=device))
         assert out.valid_cache_lengths[5].item() == prompt - 1
         assert out.valid_cache_lengths[2].item() == 41
         # The runtime table itself is untouched; advance reads it afterwards.
@@ -252,8 +257,8 @@ def test_prefill_sample_offset_ignores_how_the_prompt_was_split():
         seen.add(out.valid_cache_lengths[5].item())
     assert seen == {prompt - 1}
     # Without a cache-length table (capture warm-up) the info passes through.
-    bare = info_cls(req_pool_indices=torch.tensor([5]))
-    assert offsets(bare, torch.tensor([3], dtype=torch.int32)) is bare
+    bare = info_cls(req_pool_indices=torch.tensor([5], device=device))
+    assert offsets(bare, torch.tensor([3], dtype=torch.int32, device=device)) is bare
 
 
 def test_nan_and_oov_map_to_original_decode_rows():

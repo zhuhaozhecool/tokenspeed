@@ -23,10 +23,13 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 from dataclasses import dataclass
 
 import torch
 from tokenspeed_kernel.ops.attention.dsa.ascend import ascend_dsa_kernels
+from tokenspeed_kernel.ops.kvcache.ascend_metadata import compact_kvp_dsa_metadata
+from tokenspeed_kernel.ops.kvcache.ascend_slots import ascend_write_slots
 from tokenspeed_kernel.platform import current_platform
 
 from tokenspeed.runtime.configs.model_config import AttentionArch
@@ -81,11 +84,100 @@ def ascend_cache_write_slots(locations, placement):
     key = (locations.data_ptr(), locations.shape, locations.stride(), locations.dtype)
     if isinstance(placement, _AscendCachePlacement) and key in placement.write_slots:
         return placement.write_slots[key][1]
-    local, owned = resolve_cache_slots(locations, placement)
-    local = torch.where(owned, local, -1)
+    if locations.device.type == "npu" and os.environ.get(
+        "TOKENSPEED_DSA_SLOTS_LIBRARY"
+    ):
+        local = torch.empty_like(locations, memory_format=torch.contiguous_format)
+        ascend_write_slots(
+            locations,
+            rows_per_page=placement.block_granularity,
+            virtual_block_count=placement.virtual_block_count,
+            degree=len(placement.group),
+            rank=placement.rank,
+            out=local,
+        )
+    else:
+        local, owned = resolve_cache_slots(locations, placement)
+        local = torch.where(owned, local, -1)
     if isinstance(placement, _AscendCachePlacement):
         placement.write_slots[key] = (locations, local)
     return local
+
+
+def ascend_write_index_cache(backend, layer, out_cache_loc, pool, kwargs):
+    """Shared cache write for both Ascend Prefill leaves and Decode."""
+    spec = backend._indexer_spec
+    index_cache = pool.get_component(layer.layer_id, "dsa_index_k")
+    index_cache = index_cache.view(-1, backend.kernel_page_size, 1, spec.index_head_dim)
+    if not kwargs.get("index_cache_written", False):
+        placement = backend.cache_placement(layer)
+        index_slots = ascend_cache_write_slots(out_cache_loc, placement)
+        backend._indexer_kernels.scatter(
+            kwargs["index_key"].contiguous(), index_cache, index_slots
+        )
+    if backend.step_counter is not None:
+        backend.step_counter.record_cache()
+    return index_cache
+
+
+def ascend_kvp_index_partial(backend, index_cache, q_ends, kv_lengths, table, kwargs):
+    """The original PA local selection, including owner-local forced windows."""
+    spec = backend._indexer_spec
+    init_tokens = kwargs["index_init_tokens"]
+    local_tokens = kwargs["index_local_tokens"]
+    if (
+        init_tokens < 0
+        or local_tokens < 0
+        or init_tokens + local_tokens > spec.index_topk
+    ):
+        raise ValueError("DSA initial/local counts must be nonnegative and fit topk")
+    placement = backend.cache_placement(None)
+    if placement is None:
+        raise ValueError("KVP selection requires its bound cache placement")
+    backend._dcp.prepare_metadata(
+        seq_lens=kv_lengths,
+        page_table=table,
+        page_size=backend.kernel_page_size,
+        block_granularity=placement.block_granularity,
+        init_tokens=init_tokens,
+        local_tokens=local_tokens,
+    )
+    local = backend._dcp.metadata(start=0, end=table.shape[0])
+    return backend._indexer_kernels.index_partial(
+        kwargs["index_query"],
+        index_cache,
+        kwargs["index_weights"],
+        q_ends,
+        local.seq_lens,
+        local.page_table,
+        spec.index_topk,
+        local.init_counts,
+        local.local_counts,
+        sparse_mode=3,
+    ), local
+
+
+def ascend_prefill_index_metadata(
+    metadata, *, device, context_parallel, total_queries, num_requests
+):
+    """The existing Prefill query-row causal endpoints and request page rows."""
+    q_ends = metadata.cum_extend_seq_lens[1:].to(torch.int32)
+    kv_lengths = metadata.seq_lens.to(torch.int32)
+    table = metadata.page_table
+    if context_parallel:
+        starts = metadata.cum_extend_seq_lens[:-1]
+        requests = torch.repeat_interleave(
+            torch.arange(num_requests, device=device),
+            q_ends - starts,
+            output_size=total_queries,
+        )
+        positions = torch.arange(total_queries, device=device)
+        kv_lengths = (kv_lengths[requests] - q_ends[requests] + positions + 1).to(
+            torch.int32
+        )
+        table = table[requests]
+        q_ends = torch.arange(1, total_queries + 1, device=device, dtype=torch.int32)
+    return q_ends, kv_lengths, table
 
 
 @dataclass(frozen=True)
@@ -239,6 +331,53 @@ class _AscendDSAContextParallel(AscendDCPContext):
         virtual_block_count = self.virtual_block_count
         if virtual_block_count is None:
             raise RuntimeError("DSA CP cache metadata was not bound")
+        if page_table.device.type == "npu" and os.environ.get(
+            "TOKENSPEED_DSA_METADATA_LIBRARY"
+        ):
+            rows, columns = page_table.shape
+            outputs = {}
+            for name, shape in (
+                ("page_table", (rows, columns)),
+                ("seq_lens", (rows,)),
+                ("init_counts", (rows,)),
+                ("local_counts", (rows,)),
+            ):
+                buffer = self._metadata_buffers.get(name)
+                if (
+                    buffer is not None
+                    and buffer.shape[1:] == shape[1:]
+                    and buffer.shape[0] >= rows
+                    and buffer.device == page_table.device
+                ):
+                    outputs[name] = buffer[:rows]
+                else:
+                    # Extend batches may exceed the decode ladder's geometry.
+                    # Their temporary outputs do not replace captured buffers.
+                    outputs[name] = torch.empty(
+                        shape, dtype=torch.int32, device=page_table.device
+                    )
+                    if self._decode_rows_capacity is None:
+                        self._metadata_buffers[name] = outputs[name]
+            compact_kvp_dsa_metadata(
+                page_table,
+                seq_lens,
+                page_size=page_size,
+                block_granularity=block_granularity,
+                virtual_block_count=virtual_block_count,
+                degree=self.degree,
+                rank=self.rank,
+                init_tokens=init_tokens,
+                local_tokens=local_tokens,
+                out=outputs["page_table"],
+                local_lengths=outputs["seq_lens"],
+                init_counts=outputs["init_counts"],
+                local_counts=outputs["local_counts"],
+            )
+            self.page_table = outputs["page_table"]
+            self.seq_lens = outputs["seq_lens"]
+            self.init_counts = outputs["init_counts"]
+            self.local_counts = outputs["local_counts"]
+            return
         # Translate global selection windows through the common owned-page
         # prefix, including blocks containing multiple kernel pages.
         visible = torch.stack(
@@ -523,14 +662,7 @@ class AscendDSABackend(DSABackend):
         if init_tokens + local_tokens > spec.index_topk:
             raise ValueError("DSA initial/local tokens exceed index_topk")
         kernels = self._indexer_kernels
-        index_cache = pool.get_component(layer.layer_id, "dsa_index_k")
-        page = self.kernel_page_size
-        index_cache = index_cache.view(-1, page, 1, spec.index_head_dim)
-        placement = self.cache_placement(layer)
-        index_slots = ascend_cache_write_slots(out_cache_loc, placement)
-        kernels.scatter(kwargs["index_key"].contiguous(), index_cache, index_slots)
-        if self.step_counter is not None:
-            self.step_counter.record_cache()
+        index_cache = ascend_write_index_cache(self, layer, out_cache_loc, pool, kwargs)
         if not context_parallel or self._dcp.degree == 1:
             indices, valid_chunks = kernels.index(
                 kwargs["index_query"],
@@ -556,33 +688,10 @@ class AscendDSABackend(DSABackend):
 
         if not self._dcp.ready:
             raise RuntimeError("Ascend DSA CP process group was not configured")
-        # Model-owned selection parameters arrive with the indexer inputs.
-        # Prepare precisely these query rows, including each verify candidate.
-        self._dcp.prepare_metadata(
-            seq_lens=kv_lengths,
-            page_table=table,
-            page_size=page,
-            block_granularity=placement.block_granularity,
-            init_tokens=init_tokens,
-            local_tokens=local_tokens,
+        (local_indices, local_values), local = ascend_kvp_index_partial(
+            self, index_cache, q_ends, kv_lengths, table, kwargs
         )
-        local = self._dcp.metadata(start=0, end=table.shape[0])
-        # Each verify candidate is a one-row query with its own visible
-        # length. Cyclic page ownership stays unchanged; sparse mode 3 scans
-        # only that candidate's local prefix on each rank.
         sparse_mode = 3
-        local_indices, local_values = kernels.index_partial(
-            kwargs["index_query"],
-            index_cache,
-            kwargs["index_weights"],
-            q_ends,
-            local.seq_lens,
-            local.page_table,
-            spec.index_topk,
-            local.init_counts,
-            local.local_counts,
-            sparse_mode=sparse_mode,
-        )
 
         local_query = q.contiguous()
         tokens = local_values.shape[0]
@@ -622,6 +731,29 @@ class AscendDSABackend(DSABackend):
                 degree, *local_query.shape
             )
 
+        def select_global_indices():
+            with limit_stream_cores(
+                main_stream, cube_num=16, vector_num=32, enable=graph_phase
+            ):
+                # LightningIndexer emits descending scores per rank/query,
+                # including forced initial/local tokens and invalid padding.
+                global_positions = kernels.global_topk_rankmajor(
+                    received_values.view(degree, tokens_per_rank, candidates),
+                    spec.index_topk,
+                    sorted_per_rank=True,
+                )
+                global_positions = self._dcp.all_gather(
+                    global_positions.to(torch.int32).contiguous(),
+                    auxiliary=False,
+                )[:tokens]
+                indices, valid_chunks = kernels.select_local(
+                    local_indices,
+                    global_positions,
+                    self._dcp.rank,
+                )
+
+            return indices, valid_chunks
+
         can_overlap_query = graph_phase and self._dcp.has_auxiliary
         if can_overlap_query:
             with (
@@ -643,6 +775,9 @@ class AscendDSABackend(DSABackend):
                     local_values.squeeze(1).contiguous().view(-1),
                     auxiliary=False,
                 )
+                # Global TopK and local selection do not consume gathered Q.
+                # Join the auxiliary stream only before SFAD needs that Q.
+                indices, valid_chunks = select_global_indices()
         else:
             self._dcp.all_to_all(
                 received_values,
@@ -650,26 +785,7 @@ class AscendDSABackend(DSABackend):
                 auxiliary=False,
             )
             packed_query = gather_query()
-
-        with limit_stream_cores(
-            main_stream, cube_num=16, vector_num=32, enable=graph_phase
-        ):
-            global_values = (
-                received_values.view(degree, tokens_per_rank, candidates)
-                .transpose(0, 1)
-                .contiguous()
-                .view(tokens_per_rank, degree * candidates)
-            )
-            _, global_positions = global_values.topk(spec.index_topk, dim=1)
-            global_positions = self._dcp.all_gather(
-                global_positions.to(torch.int32).contiguous(),
-                auxiliary=False,
-            )[:tokens]
-            indices, valid_chunks = kernels.select_local(
-                local_indices,
-                global_positions,
-                self._dcp.rank,
-            )
+            indices, valid_chunks = select_global_indices()
 
         return _AscendSparseSelection(
             packed_query,
@@ -705,22 +821,8 @@ class AscendDSABackend(DSABackend):
             )
         kernels = self._indexer_kernels
         if not selection.context_parallel:
-            # TND accepts 32/64 query heads. TP can leave fewer Q heads on
-            # each rank; repeat those heads locally and keep only the first
-            # copy of the result. MLA's single latent KV head stays intact.
-            live_heads = selection.query.shape[1]
-            if live_heads < 1:
-                raise ValueError("Ascend DSA needs at least one query head")
-            if live_heads > 64:
-                raise ValueError("Ascend DSA supports at most 64 local query heads")
-            padded_heads = 32 if live_heads <= 32 else 64
-            query = selection.query
-            if live_heads != padded_heads:
-                copies = (padded_heads + live_heads - 1) // live_heads
-                query = query.repeat(1, copies, 1)[:, :padded_heads]
-            result = kernels.attention(
-                query[..., : spec.kv_lora_rank].contiguous(),
-                query[..., spec.kv_lora_rank :].contiguous(),
+            return kernels.attention_packed(
+                selection.query,
                 kv_cache,
                 selection.indices,
                 selection.valid_chunks,
@@ -728,12 +830,7 @@ class AscendDSABackend(DSABackend):
                 selection.kv_lengths,
                 selection.table,
                 layer.scaling,
-            )
-            result = result[:, :live_heads].contiguous()
-            return (
-                result.transpose(0, 1).contiguous()
-                if head_major_output
-                else result.flatten(1)
+                head_major_output=head_major_output,
             )
 
         output, softmax_max, softmax_sum = kernels.attention_partial(
@@ -843,26 +940,14 @@ class AscendDSABackend(DSABackend):
         self._validate_logit_cap(layer.logit_cap)
         metadata = self.forward_prefill_metadata
         head_major_output = kwargs.pop("head_major_output", False)
-        q_ends = metadata.cum_extend_seq_lens[1:].to(torch.int32)
-        kv_lengths = metadata.seq_lens.to(torch.int32)
-        table = metadata.page_table
         context_parallel = self._dcp.degree > 1
-        if context_parallel:
-            # Compact history drops foreign pages. Translate each prefill
-            # query's global causal endpoint, as verify does; local KV lengths
-            # cannot be used to infer the global Q offsets.
-            starts = metadata.cum_extend_seq_lens[:-1]
-            requests = torch.repeat_interleave(
-                torch.arange(bs, device=q.device),
-                q_ends - starts,
-                output_size=q.shape[0],
-            )
-            positions = torch.arange(q.shape[0], device=q.device)
-            kv_lengths = (kv_lengths[requests] - q_ends[requests] + positions + 1).to(
-                torch.int32
-            )
-            table = table[requests]
-            q_ends = torch.arange(1, q.shape[0] + 1, device=q.device, dtype=torch.int32)
+        q_ends, kv_lengths, table = ascend_prefill_index_metadata(
+            metadata,
+            device=q.device,
+            context_parallel=context_parallel,
+            total_queries=q.shape[0],
+            num_requests=bs,
+        )
         selection = self._select_indexed(
             q,
             k,
@@ -970,4 +1055,19 @@ if current_platform().is_npu:
         "dsa",
         {AttentionArch.DSA},
         AscendDSABackend,
+    )
+
+    # Import only after the shared base is defined; the candidate inherits all
+    # existing metadata, cache writes and Decode/verify behavior.
+    from tokenspeed.runtime.layers.attention.backends.paged.ascend_dsa_prefill import (
+        AscendDSAPrefillQ8Backend,
+    )
+    from tokenspeed.runtime.layers.attention.dcp.prefill_query import (
+        ASCEND_DSA_PREFILL_Q8,
+    )
+
+    register_backend(
+        ASCEND_DSA_PREFILL_Q8,
+        {AttentionArch.DSA},
+        AscendDSAPrefillQ8Backend,
     )

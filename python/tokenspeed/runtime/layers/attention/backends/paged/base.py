@@ -85,6 +85,9 @@ class PagedAttentionBackend(CachePoolBinding, ABC):
     graph-recorded; the prefill graph breaks at attention).
     """
 
+    # Leaf capability: the router also supplies cold first-chunk host pages.
+    prefill_requires_host_page_table: bool = False
+
     # Static CUDA-graph capability of this leaf class (see support.py).
     cuda_graph_support: CudaGraphSupport = CudaGraphSupport()
     # Whether a block draft (DFLASH/DSpark) runs its whole non-causal block

@@ -126,6 +126,19 @@ it enumerates candidates and keeps shadow occupancy only for the parents whose
 children it tentatively evicts. This makes the common zero-eviction path scale
 with cache groups and request demand rather than total cache capacity.
 
+A tail copy uses a fresh child in the source block's bucket, preserving its
+KVP owner. Admission charges nonempty Device tail slots as bucket-constrained
+copies; null slots and ordinary growth remain dense demand. An owner that
+publishes a tail and continues writing is charged after sliding retention and
+uses the existing canonical block's bucket when publication will deduplicate
+its slot. That canonical source is protected during the transaction's eviction,
+so planning and commit use the same bucket. Host copies and restores follow
+their existing bucket constraints.
+
+The per-step page gauge composes two O(1)-or-cheaper quantities the same way:
+empty parents come from the pool, active parents from the live requests' block
+tables, and cache-only residency is the remainder `total - empty - active`.
+
 The per-step page gauge composes two O(1)-or-cheaper quantities the same way:
 empty parents come from the pool, active parents from the live requests' block
 tables, and cache-only residency is the remainder `total - empty - active`.
@@ -1431,6 +1444,25 @@ serves every decode rank and none is a control-only dummy; the decode receiver
 already counts completions from a rank set. Replicated groups keep the
 single-source route. A field that is both head-partitioned and page-sharded is rejected by the planner.
 
+The pool declares KDA convolution's channel axis when constructing both local
+and wire transfer schemas. The legacy channel-major layout uses axis 0; Lite's
+Lazy raw history `[3, local_QKV_channels]` uses axis 1. Both keep the same three
+Q/K/V global partition extents, so TP reshaping copies each segment of every
+history row without transposing the arena or changing checkpoint bytes. The
+schema rejects unsupported axes and axes absent from the physical field.
+
+A receive timeout, lost Prefill heartbeat or remote failure notification is
+not a remote WRITE cancellation acknowledgement. The current failure frame
+does not distinguish pre-submit failure from an undrained WRITE timeout.
+Once Decode has published its destination manifest, these
+unconfirmed failures escape the receiver poll to the worker fatal path; they
+must not emit a scheduler `FailedEvent`, which would release the destination
+blocks for immediate reuse. The supervisor retires the worker and its arena.
+Ordinary client cancellation still holds the existing PD lease until transfer
+completion. A failure before publishing destinations remains request-local.
+The wire manifest requires a boolean `state_prefix_cached`: coercing a string
+such as `"false"` would wrongly omit the exact prompt-end state.
+
 The plan records one decision per (source rank, sharded group), never by
 omission: the owner filter when the rank's fragments name the group, an
 explicit `None` when they do not -- a rank routed only for another group's
@@ -1445,6 +1477,41 @@ whole field, or a head slice whose rows collapsed into one -- into its group's
 pages x fields grid, so KVP, pipeline stages and replicated fields across
 unequal TP all go through the page-gathered WRITE; only a fragment with
 several strided rows per page is emitted per page.
+
+The transport wrapper selects the page-transfer implementation explicitly.
+`TOKENSPEED_MOONCAKE_PAGE_TRANSFER=native` (the service default) requires
+Mooncake's native pages API. `batch` supports engines with ordinary synchronous
+batch WRITE: it validates page/field metadata and address bounds before writing,
+then expands the same field-major grid in bounded host batches. Payloads remain
+in their registered device buffers. This compatibility path adds host descriptor
+and submission overhead; it does not reproduce native pages API performance.
+Any nonzero result stops further submission, without retrying through another
+implementation. A failed or timed-out WRITE is not a drain acknowledgement;
+destination allocations must remain unavailable for reuse until the receiver's
+transfer-failure lifetime policy has stopped all possible writers.
+
+### Optional PD observations
+
+`TOKENSPEED_PD_AUDIT_DIR` enables per-process JSONL observations of request
+routing, Prefill and Decode prefix matches, completed receive notifications,
+field transfer plans, and Decode forward/idle calls. It does not read device
+tensors or synchronize streams. Filesystem errors propagate instead of silently
+dropping evidence. Leaving the variable unset disables these records.
+
+Join request IDs to transfer rooms through `route` records. Prefix observations
+are emitted independently on every participating rank; aggregators must require
+agreement rather than summing token counts over ranks. Transfer plans describe
+the bytes selected by each source-to-destination route. Sum field bytes only
+once, and accept `submitted_bytes` only from the matching successful
+`transfer_done` record. Failed transfers have unknown submitted bytes, and no
+application retry is performed. These are descriptor payload bytes, not physical
+network traffic counters; lower-level retransmissions are not observed.
+
+Decode step records come from each TP domain's leader and include the actual
+request IDs, including partial batches. Their times bound the host forward call,
+not device execution; no device idle time can be inferred from them. Monotonic
+timestamps are comparable only on the same host. Auditing adds host file I/O,
+so benchmark manifests must record whether it was enabled.
 
 The runtime derives compact DCP page tables and local visible lengths from
 the scheduler's virtual block tables, without introducing new scheduler-owned

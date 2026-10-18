@@ -54,10 +54,12 @@ def get_kv_args(
     # One big model, one arena: a draft's continuation-layer planes live in
     # the target pool's merged plan, so exactly one typed slab registration is
     # published for both target and draft caches.
+    kda_conv_channel_axis = getattr(token_to_kv_pool, "kda_conv_channel_axis", 0)
     transfer_schema = build_cache_transfer_schema(
         token_to_kv_pool.arena.plan,
         model_config=model_config,
         draft_model_config=draft_model_config,
+        kda_conv_channel_axis=kda_conv_channel_axis,
     )
     producer_schedule = build_cache_fields_by_producer_step(
         token_to_kv_pool.arena.plan,
@@ -83,6 +85,7 @@ def get_kv_args(
                 logical_plan,
                 model_config=model_config,
                 draft_model_config=draft_model_config,
+                kda_conv_channel_axis=kda_conv_channel_axis,
             ),
         )
     return KVArgs(

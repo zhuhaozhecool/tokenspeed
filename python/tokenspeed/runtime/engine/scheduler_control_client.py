@@ -31,6 +31,7 @@ from typing import (
 from tokenspeed.runtime.engine.io_struct import (
     DestroyWeightsUpdateGroupReqInput,
     DestroyWeightsUpdateGroupReqOutput,
+    FlushCacheDomain,
     FlushCacheReqInput,
     FlushCacheReqOutput,
     GetInternalStateReq,
@@ -91,8 +92,18 @@ def combined_flush_cache_output(
     report.
     """
 
+    # The communicator waits for its configured fan-out count. Domain IDs must
+    # come from those worker replies; duplicated/missing IDs cannot prove a flush.
+    domains = [
+        FlushCacheDomain(dp_rank=result.dp_rank, success=result.success)
+        for result in results
+        if result.dp_rank is not None
+    ]
+    ranks = [domain.dp_rank for domain in domains]
+    complete = sorted(ranks) == list(range(len(results)))
     return FlushCacheReqOutput(
-        success=bool(results) and all(result.success for result in results),
+        success=bool(results) and complete and all(result.success for result in results),
+        domains=sorted(domains, key=lambda domain: domain.dp_rank),
     )
 
 

@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import gc
+import os
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -175,7 +176,10 @@ def _with_prefill_sample_offsets(
     last = cache_lengths.index_select(0, pool_rows) + input_lengths[
         : pool_rows.shape[0]
     ].to(cache_lengths.dtype)
-    offsets = cache_lengths.index_copy(
+    # torch_npu 2.9's out-of-place index_copy also writes its input. Keep
+    # sampling positions in separate storage from the accepted frontier.
+    offsets = cache_lengths.clone()
+    offsets.index_copy_(
         0, pool_rows, (last - 1).clamp_min(0).to(cache_lengths.dtype)
     )
     return replace(sampling_info, valid_cache_lengths=offsets)
@@ -1944,6 +1948,13 @@ class ModelExecutor:
         if not pages:
             return None
         self.default_stream.wait_stream(self.execution_stream)
+        if os.environ.get("TOKENSPEED_STANDALONE_DECODE_BENCHMARK") == "reuse-cache":
+            # Synthetic independent Decode reuses initialized page payloads.
+            # Preserve the old-owner fence and PD admission event, but avoid
+            # clearing pages while other requests are being measured.
+            done = self.device_module.Event()
+            done.record(self.default_stream)
+            return done
 
         if isinstance(pages, Mapping):
             # Group-keyed requests carry scheduler (virtual) IDs; pools and the

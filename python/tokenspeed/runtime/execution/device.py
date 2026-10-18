@@ -74,6 +74,7 @@ from __future__ import annotations
 import contextlib
 import enum
 import os
+import time
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -101,6 +102,7 @@ from tokenspeed.runtime.moe.expert_location import (
     get_global_expert_location_metadata,
 )
 from tokenspeed.runtime.moe.expert_rebalance import ExpertRebalanceSpecs, SlotMoves
+from tokenspeed.runtime.pd.audit import emit_pd_audit, pd_audit_enabled
 from tokenspeed.runtime.utils import get_colorful_logger
 from tokenspeed.runtime.utils.env import envs
 from tokenspeed.runtime.utils.host_sync import allow_host_sync
@@ -565,7 +567,9 @@ class DeviceHandle:
         executor = self._executor
 
         def _forward():
-            return executor.execute_forward_op(
+            observe = pd_audit_enabled() and self._role is DeviceRole.PD_DECODE
+            started_ns = time.monotonic_ns() if observe else 0
+            result = executor.execute_forward_op(
                 planned.forward_op,
                 planned.sampling_params_list,
                 dp_metadata=planned.dp_metadata,
@@ -576,6 +580,23 @@ class DeviceHandle:
                 request_history_seeds=planned.request_history_seeds,
                 input_logprob_plan=planned.input_logprob_plan,
             )
+            if observe:
+                topology = self._kv_transfer.kv_manager.topology
+                if topology.tp_rank == 0:
+                    op = planned.forward_op
+                    emit_pd_audit(
+                        "d_step",
+                        role="decode",
+                        global_rank=topology.global_rank,
+                        dp_rank=topology.dp_rank,
+                        request_ids=list(op.request_ids),
+                        batch_size=len(op.request_ids),
+                        num_extends=int(op.num_extends()),
+                        start_ns=started_ns,
+                        end_ns=time.monotonic_ns(),
+                        time_scope="host_forward_call",
+                    )
+            return result
 
         return PendingExecution(self._thread.submit(_forward))
 
@@ -714,7 +735,27 @@ class DeviceHandle:
             dp_metadata: The round's CPU-gathered DP metadata.
         """
         executor = self._executor
-        self._thread.run(lambda: executor.execute_idle_forward(dp_metadata))
+
+        def _idle():
+            observe = pd_audit_enabled() and self._role is DeviceRole.PD_DECODE
+            started_ns = time.monotonic_ns() if observe else 0
+            result = executor.execute_idle_forward(dp_metadata)
+            if observe:
+                topology = self._kv_transfer.kv_manager.topology
+                if topology.tp_rank == 0:
+                    emit_pd_audit(
+                        "d_idle",
+                        role="decode",
+                        global_rank=topology.global_rank,
+                        dp_rank=topology.dp_rank,
+                        batch_size=0,
+                        start_ns=started_ns,
+                        end_ns=time.monotonic_ns(),
+                        time_scope="host_idle_forward_call",
+                    )
+            return result
+
+        self._thread.run(_idle)
 
     def _submit_remote_prefill(self, remote_prefill, zero_future):
         """Queue a remote-prefill stream: pull its rows' KV from the peer.
@@ -1869,6 +1910,18 @@ def _build_kv_transfer(
     sync_group = pg_manager.get_process_group(
         "gloo", mapping.world_group if mapping.has_pp else mapping.attn.tp_group
     )
+    if os.environ.get("TOKENSPEED_STANDALONE_DECODE_BENCHMARK") == "reuse-cache":
+        if server_args.disaggregation_mode != "decode":
+            raise ValueError("Standalone benchmark requires the PD Decode role")
+        from standalone_decode_adapter import StandaloneDecodeExecutor
+
+        return StandaloneDecodeExecutor(
+            arena=executor.token_to_kv_pool.arena,
+            gloo_group=sync_group,
+            rank=global_rank,
+            kvp_size=mapping.attn.kvp_size,
+            kvp_rank=mapping.attn.kvp_rank,
+        )
     kv_transfer = create_kv_transfer(
         mode=server_args.disaggregation_mode,
         backend=server_args.disaggregation_transfer_backend,

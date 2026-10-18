@@ -744,6 +744,7 @@ class CacheGroupRouter(AttentionBackend):
                     self.stacks.host_table(gid, block_tables_cpu[gid], num_extends)
                     if sharded
                     or (extend_with_prefix and gid in self._page_sharded_groups)
+                    or (num_extends > 0 and leaf.prefill_requires_host_page_table)
                     else None
                 ),
             )

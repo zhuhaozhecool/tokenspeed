@@ -58,6 +58,7 @@ from tokenspeed.runtime.engine.io_struct import (
     mooncake_load_weight_version,
 )
 from tokenspeed.runtime.entrypoints.rl_control import install_bearer_auth
+from tokenspeed.runtime.pd.bench_cohort_http import handle_cohort_control
 from tokenspeed.runtime.utils import get_colorful_logger
 
 if TYPE_CHECKING:
@@ -66,6 +67,15 @@ if TYPE_CHECKING:
 logger = get_colorful_logger(__name__)
 
 router = APIRouter()
+
+
+@router.api_route("/bench/cohort/{action}", methods=["GET", "POST"])
+async def benchmark_cohort_control(request: Request, action: str) -> JSONResponse:
+    return await handle_cohort_control(
+        request,
+        action,
+        decode_role=_llm(request).server_args.disaggregation_mode == "decode",
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -410,8 +420,15 @@ async def continue_generation(request: Request) -> JSONResponse:
 @router.api_route("/flush_cache", methods=["GET", "POST"])
 async def flush_cache(request: Request) -> JSONResponse:
     async def _do() -> dict[str, Any]:
-        await _llm(request).flush_cache()
-        return {"success": True, "message": "Cache flushed."}
+        result = await _llm(request).flush_cache()
+        return {
+            "success": result.success,
+            "message": "Cache flushed." if result.success else "Cache flush failed.",
+            "domains": [
+                {"dp_rank": domain.dp_rank, "success": domain.success}
+                for domain in result.domains
+            ],
+        }
 
     return await _guarded(_do)
 
