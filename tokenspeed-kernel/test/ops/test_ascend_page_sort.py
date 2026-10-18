@@ -71,3 +71,63 @@ def test_compaction_preserves_token_order(rank, with_prefix):
             )
     torch.testing.assert_close(out, expected)
     torch.testing.assert_close(local, torch.tensor(expected_lengths))
+
+
+@pytest.mark.parametrize("behavior", ["decline", "legacy", "failure"])
+def test_optional_leaf_never_retries_after_launch(behavior, monkeypatch):
+    from tokenspeed_kernel.registry import KernelRegistry, register_kernel
+    from tokenspeed_kernel.signature import format_signatures
+
+    KernelRegistry.reset()
+    try:
+
+        @register_kernel(
+            "kvcache",
+            "compact_kvp_pages_native",
+            name="test_optional_metadata",
+            solution="test",
+            signatures=format_signatures("table", "dense", {torch.int32}),
+        )
+        def leaf(table, lengths, **kwargs):
+            # Stand in for the device launch unavailable on a CPU test host.
+            if behavior == "decline":
+                return False
+            kwargs["out"].fill_(42)
+            kwargs["local_lengths"].fill_(7)
+            if behavior == "failure":
+                raise RuntimeError("device launch failed after writing")
+            return None
+
+        table = torch.tensor([[1, 2]], dtype=torch.int32)
+        lengths = torch.tensor([16], dtype=torch.int32)
+        out = torch.zeros_like(table)
+        local = torch.zeros_like(lengths)
+
+        def run():
+            _compact_dcp_pages_ascend(
+                table,
+                lengths,
+                page_size=8,
+                subpages=1,
+                virtual_block_count=3,
+                degree=1,
+                rank=0,
+                out=out,
+                local_lengths=local,
+                page_prefix=None,
+            )
+
+        if behavior == "failure":
+            with pytest.raises(RuntimeError, match="device launch failed"):
+                run()
+            assert out.tolist() == [[42, 42]]
+        elif behavior == "legacy":
+            run()
+            assert out.tolist() == [[42, 42]]
+            assert local.tolist() == [7]
+        else:
+            run()
+            torch.testing.assert_close(out, table)
+            torch.testing.assert_close(local, lengths)
+    finally:
+        KernelRegistry.reset()

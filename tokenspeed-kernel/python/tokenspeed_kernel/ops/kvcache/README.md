@@ -77,3 +77,8 @@ buffers and the ordinary compaction fallback.
 The slot adapter writes physical owner slots and marks null/foreign entries
 with -1. INT32/INT64 input contracts are validated before launching. The
 optional direct native ABI currently requires `TASK_QUEUE_ENABLE=0`.
+
+The optional native compaction facade returns whether a leaf ran. Missing
+registration or a leaf declining before mutation uses the existing Torch/AIV-sort
+path. Legacy leaves returning `None` still count as successful launches. An
+explicit invalid kernel override and any launch exception remain errors.

@@ -29,8 +29,6 @@ reads/writes belong to their cache-layout kernels.
 
 from __future__ import annotations
 
-import os
-
 import torch
 from tokenspeed_kernel._triton import tl, triton
 
@@ -310,23 +308,22 @@ def _compact_dcp_pages_ascend(
     local_lengths,
     page_prefix,
 ):
-    if os.environ.get("TOKENSPEED_DSA_METADATA_LIBRARY"):
-        from tokenspeed_kernel.ops.kvcache.ascend_metadata import (
-            compact_kvp_pages_native,
-        )
+    from tokenspeed_kernel.ops.kvcache.ascend_metadata import (
+        compact_kvp_pages_native,
+    )
 
-        compact_kvp_pages_native(
-            table,
-            lengths,
-            page_size=page_size,
-            subpages=subpages,
-            virtual_block_count=virtual_block_count,
-            degree=degree,
-            rank=rank,
-            out=out,
-            local_lengths=local_lengths,
-            page_prefix=page_prefix,
-        )
+    if compact_kvp_pages_native(
+        table,
+        lengths,
+        page_size=page_size,
+        subpages=subpages,
+        virtual_block_count=virtual_block_count,
+        degree=degree,
+        rank=rank,
+        out=out,
+        local_lengths=local_lengths,
+        page_prefix=page_prefix,
+    ):
         return
     # The Ascend Triton launcher for this kernel initializes a lock with
     # synchronous rtMemcpy. That launcher cannot execute during graph capture.

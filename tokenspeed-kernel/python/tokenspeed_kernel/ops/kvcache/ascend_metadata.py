@@ -21,14 +21,26 @@
 from __future__ import annotations
 
 """Kernel-registry boundary for an optional native KVP compaction leaf."""
-from tokenspeed_kernel.selection import select_kernel
+from tokenspeed_kernel.selection import (
+    NoKernelFoundError,
+    resolve_kernel_override,
+    select_kernel,
+)
 from tokenspeed_kernel.signature import dense_tensor_format, format_signature
 
 
-def compact_kvp_pages_native(table, lengths, **kwargs):
-    kernel = select_kernel(
-        "kvcache",
-        "compact_kvp_pages_native",
-        format_signature(table=dense_tensor_format(table.dtype)),
-    )
-    return kernel(table, lengths, **kwargs)
+def compact_kvp_pages_native(table, lengths, **kwargs) -> bool:
+    """Return False only when no optional leaf can run; never retry a failed launch."""
+    try:
+        kernel = select_kernel(
+            "kvcache",
+            "compact_kvp_pages_native",
+            format_signature(table=dense_tensor_format(table.dtype)),
+        )
+    except NoKernelFoundError:
+        if resolve_kernel_override("kvcache", "compact_kvp_pages_native", None):
+            raise
+        return False
+    # Older leaves return None after a successful launch. A newer leaf can
+    # decline before touching outputs when its optional binary is absent.
+    return kernel(table, lengths, **kwargs) is not False
