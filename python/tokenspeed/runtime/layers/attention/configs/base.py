@@ -185,6 +185,8 @@ class AttnConfig:
     # against this; user-facing limits stay on the logical context_len.
     context_len: int
     max_bs: int
+    # Candidate-only bounded exchange capacity; None means no Q8 workspace.
+    prefill_query_workspace_tokens: int | None = None
     # True iff server_args.disaggregation_mode != "null"; cache recipes use
     # it to stamp transfer policies onto the cache group specs.
     pd_disaggregation_enabled: bool = False
@@ -248,8 +250,18 @@ class AttnConfig:
                     raise ValueError("FlashMLA DCP decode requires CUDA")
             elif softmax.backend_name == "tokenspeed_mla":
                 pass
-            elif softmax.is_dsa and softmax.backend_name in (None, "dsa"):
+            elif softmax.is_dsa and softmax.backend_name in (
+                None,
+                "dsa",
+                "ascend_dsa_prefill_q8",
+            ):
                 device_type = torch.device(self.device).type
+                if softmax.backend_name == "ascend_dsa_prefill_q8" and (
+                    device_type != "npu" or self.kvp_size != 8 or self.qcp_size != 1
+                ):
+                    raise ValueError(
+                        "Ascend Prefill Q8 requires NPU KVP8 and model QCP1"
+                    )
                 if device_type not in ("cuda", "npu"):
                     raise ValueError("DSA DCP decode requires CUDA or Ascend NPU")
                 if device_type == "cuda" and self.draft_block_decode:

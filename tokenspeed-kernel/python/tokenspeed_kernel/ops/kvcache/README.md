@@ -57,3 +57,23 @@ The residency path uses only CuTe DSL. The former resident/selection sorting,
 binary-search lookup and adjacent-entry miss deduplication have been removed.
 Hash ownership merges duplicate loads while preserving all attention references;
 upstream top-k ordering remains part of the attention numerical contract.
+
+### Ascend page compaction sort
+
+Column IDs and the invalid-column sentinel are converted to FP32 only when
+the table width is at most 2**24. These integers are exactly representable,
+so Sort can use AIV. Valid column IDs are unique; equal invalid keys are
+masked after gathering. Wider tables retain the integer path.
+
+### Native Ascend KVP metadata
+
+The optional metadata adapter writes compact page tables and per-query visible
+lengths into caller-owned persistent buffers on every invocation. The library
+is loaded before capture. Its current direct-launch ABI requires
+`TASK_QUEUE_ENABLE=0`; package/stream integration is a merge gate.
+
+### Native Ascend KVP slots
+
+The slot adapter writes physical owner slots and marks null/foreign entries
+with -1. INT32/INT64 input contracts are validated before launching. The
+optional direct native ABI currently requires `TASK_QUEUE_ENABLE=0`.
