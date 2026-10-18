@@ -29,6 +29,7 @@ from tokenspeed.runtime.pd.audit import (
     start_transfer_audit,
 )
 from tokenspeed.runtime.pd.extensions import create_pd_policy, pd_server_info
+from tokenspeed.runtime.pd.server_info import canonical_pd_server_info
 from tokenspeed.runtime.plugins.registry import (
     recording,
     register_pd_observer,
@@ -95,3 +96,28 @@ def test_explicit_override_rolls_back_to_prior_provider():
         assert second.events == [("one", {})]
         raise RegistrationFailed()
     assert not pd_audit_enabled()
+
+
+def test_transport_discovery_entry_preserves_execution_arguments():
+    source = {"attention_backend": "prefill_variant", "disaggregation_mode": "prefill"}
+    assert canonical_pd_server_info(source) == source
+    with pytest.raises(RegistrationFailed), recording():
+        register_pd_server_info(
+            lambda info: dict(
+                info,
+                attention_backend="cache_compatible_base",
+                execution_attention_backend=info["attention_backend"],
+            )
+        )
+        advertised = canonical_pd_server_info(source)
+        assert advertised == {
+            "attention_backend": "cache_compatible_base",
+            "execution_attention_backend": "prefill_variant",
+            "disaggregation_mode": "prefill",
+        }
+        assert source == {
+            "attention_backend": "prefill_variant",
+            "disaggregation_mode": "prefill",
+        }
+        raise RegistrationFailed()
+    assert canonical_pd_server_info(source) == source

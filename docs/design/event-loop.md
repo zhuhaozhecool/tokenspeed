@@ -668,3 +668,8 @@ Observation providers receive existing host facts. They must not read device
 tensors or synchronize devices. Serialization, sampling and storage belong to
 the provider. The default path has no provider and performs no observation I/O.
 Registration uses the plugin loader's duplicate checks and rollback.
+
+Transport services may call `pd.server_info.canonical_pd_server_info` to obtain
+cache-compatible discovery arguments. It delegates to the registered plugin
+provider and keeps the execution configuration unchanged; without a provider,
+the original discovery values are preserved.
