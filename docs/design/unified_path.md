@@ -1989,3 +1989,10 @@ released, and the client receives a `CapacityAbort` finish. The fixed hot
 partition is reused only after the new owner's PD initialization invalidates
 its metadata. No snapshot store, restore, recovery prefill or extend staging
 is used by offloaded arenas.
+
+### Ascend DSA metadata lifecycle
+
+Decode refreshes KVP tables, owner slots and TopK windows before replay.
+The optional native metadata path preserves dynamic per-step inputs. Short,
+full-scan and unsupported geometries retain the explicit adapter fallbacks.
+Prefill delegates to the bounded-query adapter introduced separately.
