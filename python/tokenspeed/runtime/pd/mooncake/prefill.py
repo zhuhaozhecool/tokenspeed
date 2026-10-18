@@ -33,6 +33,7 @@ import numpy as np
 import requests
 
 from tokenspeed.runtime.layers.attention.kv_cache.recipes.spec import CacheGroupSpec
+from tokenspeed.runtime.pd.audit import TransferAudit, emit_pd_audit, pd_audit_enabled
 from tokenspeed.runtime.pd.base.status import TransferPoll
 from tokenspeed.runtime.pd.cache_protocol import (
     CachePDBlockManifest,
@@ -222,6 +223,15 @@ class MooncakeKVManagerPrefill(MooncakeKVManagerBase):
         with self.bootstrap_token_cond:
             if self.request_status.get(room) not in (None, TransferPoll.Failed):
                 self.cached_tokens[room] = cached_tokens
+                if pd_audit_enabled():
+                    emit_pd_audit(
+                        "p_cache",
+                        role="prefill",
+                        global_rank=self.topology.global_rank,
+                        dp_rank=self.topology.dp_rank,
+                        room=int(room),
+                        p_cached_tokens=int(cached_tokens),
+                    )
 
     def record_bootstrap_logprob(self, room: int, logprob: float) -> None:
         """Publish the bootstrap token's logprob before the final transfer is submitted."""
@@ -425,7 +435,7 @@ class MooncakeKVManagerPrefill(MooncakeKVManagerBase):
         """WRITE descriptors in bounded batches, packing PackedCopy items per batch.
 
         A ``PageFieldCopies`` item is one page-gathered WRITE, expanded and
-        batched inside Mooncake; per-descriptor items (tuples, PackedCopy)
+        batched by the selected transport implementation; per-descriptor items (tuples, PackedCopy)
         are collected and written through the packer path in between,
         preserving order.
         """
@@ -488,6 +498,7 @@ class MooncakeKVManagerPrefill(MooncakeKVManagerBase):
         dst_cache_layout: CacheTransferContract,
         block_selection: CachePDLayerwiseBlockSelection | None = None,
         field_ids: frozenset[str] | None = None,
+        audit: TransferAudit | None = None,
     ) -> Iterator[PageFieldCopies | PackedCopy | tuple[int, int, int]]:
         """Yield the copies that move this rank's part of one request's blocks.
 
@@ -583,6 +594,14 @@ class MooncakeKVManagerPrefill(MooncakeKVManagerBase):
         # fields grid is expanded inside Mooncake.
         src_ptr = self.kv_args.kv_data_ptr
         for group_spec, src_pages, dst_pages in group_transfers:
+            source_owner = (
+                owner_filters[group_spec.group_id].owner_rank
+                if group_spec.shard_count > 1
+                else 0
+            )
+            destination_owner = dst_tp_rank % dst_cache_layout.shard_count(
+                group_spec.group_id
+            )
             field_rows: list[tuple[int, int, int, int, int]] = []
             if cache_fragments:
                 for fragment in fragments_by_group.get(group_spec.group_id, ()):
@@ -601,6 +620,22 @@ class MooncakeKVManagerPrefill(MooncakeKVManagerBase):
                         dst_cache_layout.field_address(dst_ptr, dst_segment.field_id)
                         + fragment.dst_byte_offset
                     )
+                    if audit is not None:
+                        contiguous_destination = (
+                            fragment.dst_row_stride_bytes == fragment.bytes_per_row
+                        )
+                        audit.field(
+                            group=group_spec.group_id,
+                            field=fragment.field_id,
+                            source_owner=source_owner,
+                            destination_owner=destination_owner,
+                            pages=int(src_pages.size),
+                            bytes_per_page=fragment.bytes_per_row
+                            * fragment.rows_per_page,
+                            descriptors_per_page=(
+                                1 if contiguous_destination else fragment.rows_per_page
+                            ),
+                        )
                     if fragment.rows_per_page == 1:
                         field_rows.append(
                             (
@@ -628,6 +663,16 @@ class MooncakeKVManagerPrefill(MooncakeKVManagerBase):
                     dst_segment = peer_segments[
                         (group_spec.group_id, src_segment.field_id)
                     ]
+                    if audit is not None:
+                        audit.field(
+                            group=group_spec.group_id,
+                            field=src_segment.field_id,
+                            source_owner=source_owner,
+                            destination_owner=destination_owner,
+                            pages=int(src_pages.size),
+                            bytes_per_page=src_segment.payload_bytes,
+                            descriptors_per_page=1,
+                        )
                     field_rows.append(
                         (
                             layout.field_address(src_ptr, src_segment.field_id),
@@ -744,6 +789,17 @@ class MooncakeKVManagerPrefill(MooncakeKVManagerBase):
             prepared = []
             for req, registration in registered_reqs:
                 assert req.block_manifest is not None
+                audit = (
+                    TransferAudit(
+                        room=kv_chunk.room,
+                        global_rank=self.topology.global_rank,
+                        dp_rank=self.topology.dp_rank,
+                        source_tp_rank=self.topology.tp_rank,
+                        destination_tp_rank=registration.decode_tp_rank,
+                    )
+                    if pd_audit_enabled()
+                    else None
+                )
                 blocks = self._cache_transfer_blocks(
                     dst_ptr=registration.dst_kv_ptr,
                     dst_tp_rank=registration.decode_tp_rank,
@@ -754,6 +810,7 @@ class MooncakeKVManagerPrefill(MooncakeKVManagerBase):
                     dst_cache_layout=registration.peer_cache_layout,
                     block_selection=block_selection,
                     field_ids=producer_schedule.fields_in_range(begin_step, end_step),
+                    audit=audit,
                 )
                 prepared.append(
                     (
@@ -761,11 +818,14 @@ class MooncakeKVManagerPrefill(MooncakeKVManagerBase):
                         registration,
                         self._prime_transfer_blocks(blocks),
                         time.monotonic(),
+                        audit,
                     )
                 )
 
-            for req, registration, blocks, started_at in prepared:
+            for req, registration, blocks, started_at, audit in prepared:
                 ret = self._transfer_data(req.mooncake_session_id, blocks, packer)
+                if audit is not None:
+                    audit.done(ret)
                 if ret != 0:
                     with self.session_lock:
                         self.session_failures[req.mooncake_session_id] += 1
@@ -963,6 +1023,17 @@ class MooncakeKVManagerPrefill(MooncakeKVManagerBase):
                             )
                     registration = self.get_decode_registration(req)
                     assert req.block_manifest is not None
+                    audit = (
+                        TransferAudit(
+                            room=kv_chunk.room,
+                            global_rank=self.topology.global_rank,
+                            dp_rank=self.topology.dp_rank,
+                            source_tp_rank=self.topology.tp_rank,
+                            destination_tp_rank=registration.decode_tp_rank,
+                        )
+                        if pd_audit_enabled()
+                        else None
+                    )
                     blocks = self._cache_transfer_blocks(
                         dst_ptr=registration.dst_kv_ptr,
                         dst_tp_rank=registration.decode_tp_rank,
@@ -971,6 +1042,7 @@ class MooncakeKVManagerPrefill(MooncakeKVManagerBase):
                         transfer_fragments=registration.transfer_fragments,
                         owner_filters=registration.transfer_owner_filters,
                         dst_cache_layout=registration.peer_cache_layout,
+                        audit=audit,
                     )
                     prepared.append(
                         (
@@ -978,11 +1050,14 @@ class MooncakeKVManagerPrefill(MooncakeKVManagerBase):
                             registration,
                             self._prime_transfer_blocks(blocks),
                             time.monotonic(),
+                            audit,
                         )
                     )
 
-                for req, registration, blocks, started_at in prepared:
+                for req, registration, blocks, started_at, audit in prepared:
                     ret = self._transfer_data(req.mooncake_session_id, blocks, packer)
+                    if audit is not None:
+                        audit.done(ret)
                     if ret != 0:
                         with self.session_lock:
                             self.session_failures[req.mooncake_session_id] += 1

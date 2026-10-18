@@ -21,6 +21,7 @@
 
 from tokenspeed_scheduler import PD, Forward
 
+from tokenspeed.runtime.pd.audit import emit_pd_audit, pd_audit_enabled
 from tokenspeed.runtime.pd.base.bootstrap import BootstrapInfo
 from tokenspeed.runtime.pd.base.status import TransferPoll
 from tokenspeed.runtime.pd.cache_protocol import build_cache_block_manifest
@@ -47,6 +48,16 @@ class DisaggDecodeExecutor:
         self._remote_spec_candidate_ids: dict[str, tuple[int, list[int]]] = {}
 
     def _bootstrap(self, request_id, info):
+        if pd_audit_enabled():
+            topology = self.kv_manager.topology
+            emit_pd_audit(
+                "route",
+                role="decode",
+                global_rank=topology.global_rank,
+                dp_rank=topology.dp_rank,
+                rid=request_id,
+                room=int(info.bootstrap_room),
+            )
         self.receivers[request_id] = MooncakeKVReceiver(
             mgr=self.kv_manager,
             bootstrap_addr=join_host_port(info.bootstrap_host, info.bootstrap_port),
@@ -86,6 +97,19 @@ class DisaggDecodeExecutor:
         # invalid row must not leave an earlier Prefill sender waiting forever.
         for request_id, receiver, request_pool_index, block_manifest in pending:
             self._admissions[request_id] = request_pool_index
+            if pd_audit_enabled():
+                topology = self.kv_manager.topology
+                emit_pd_audit(
+                    "d_cache",
+                    role="decode",
+                    global_rank=topology.global_rank,
+                    dp_rank=topology.dp_rank,
+                    rid=request_id,
+                    room=int(receiver.bootstrap_room),
+                    d_hit_tokens=int(block_manifest.prefix_len),
+                    prompt_len=int(block_manifest.prompt_len),
+                    state_prefix_cached=bool(block_manifest.state_prefix_cached),
+                )
             receiver.prefill(block_manifest=block_manifest)
 
     def register(
@@ -152,6 +176,18 @@ class DisaggDecodeExecutor:
                 request_pool_index = self._admissions[req_id]
                 self._remote_cache_slots[req_id] = request_pool_index
                 self._remote_cached_tokens[req_id] = cached_tokens
+                if pd_audit_enabled():
+                    topology = self.kv_manager.topology
+                    emit_pd_audit(
+                        "d_receive_complete",
+                        role="decode",
+                        global_rank=topology.global_rank,
+                        dp_rank=topology.dp_rank,
+                        rid=req_id,
+                        room=int(bootstrap_room),
+                        p_cached_tokens=int(cached_tokens),
+                        success=True,
+                    )
                 self._remote_bootstrap_logprobs[req_id] = bootstrap_logprob
                 if spec_candidate_ids is not None:
                     self._remote_spec_candidate_ids[req_id] = (

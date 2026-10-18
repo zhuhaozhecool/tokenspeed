@@ -2049,6 +2049,56 @@ def test_transfer_blocks_keep_only_owned_pages_translated_to_local() -> None:
     assert item.dst_pages.tolist() == [10, 12, 14]
 
 
+def test_transfer_audit_counts_only_selected_owner_payload(tmp_path, monkeypatch):
+    import json
+
+    from tokenspeed.runtime.pd.audit import TransferAudit
+    from tokenspeed.runtime.pd.transfer_plan import CachePageOwnerFilter
+
+    monkeypatch.setenv("TOKENSPEED_PD_AUDIT_DIR", str(tmp_path))
+    source_layout = _sharded_history_layout(2)
+    destination_layout = _sharded_history_layout(1)
+    manager, _ = _recording_transfer_manager(source_layout, 0x1000)
+    audit = TransferAudit(
+        room=42,
+        global_rank=1,
+        dp_rank=0,
+        source_tp_rank=1,
+        destination_tp_rank=0,
+    )
+    (item,) = manager._cache_transfer_blocks(
+        dst_tp_rank=0,
+        dst_ptr=0x2000,
+        src_block_manifest=_single_group_block_manifest("history", (1, 2, 3, 4, 5, 6)),
+        dst_block_manifest=_single_group_block_manifest(
+            "history", (10, 11, 12, 13, 14, 15)
+        ),
+        owner_filters={"history": CachePageOwnerFilter(1, 2)},
+        dst_cache_layout=destination_layout,
+        audit=audit,
+    )
+    audit.done(0)
+    payload = sum(
+        length
+        for _, _, length in _expand_page_fields(
+            item.src_pages, item.dst_pages, item.fields
+        )
+    )
+    records = [
+        json.loads(line)
+        for path in tmp_path.glob("*.jsonl")
+        for line in path.read_text().splitlines()
+    ]
+    plan, done = records
+    assert plan["event"] == "transfer_plan"
+    assert plan["source_owner"] == 1
+    assert plan["destination_owner"] == 0
+    assert plan["pages"] == 3
+    assert plan["planned_payload_bytes"] == payload == 48
+    assert done["submitted_bytes"] == payload
+    assert done["transfer_id"] == plan["transfer_id"]
+
+
 def test_transfer_blocks_apply_owner_filter_to_layerwise_selection() -> None:
     from tokenspeed.runtime.pd.cache_protocol import (
         CachePDLayerwiseBlockSelection,
