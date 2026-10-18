@@ -64,3 +64,9 @@ The optional metadata adapter writes compact page tables and per-query visible
 lengths into caller-owned persistent buffers on every invocation. The library
 is loaded before capture. Its current direct-launch ABI requires
 `TASK_QUEUE_ENABLE=0`; package/stream integration is a merge gate.
+
+### Native Ascend KVP slots
+
+The slot adapter writes physical owner slots and marks null/foreign entries
+with -1. INT32/INT64 input contracts are validated before launching. The
+optional direct native ABI currently requires `TASK_QUEUE_ENABLE=0`.
