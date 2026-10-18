@@ -57,3 +57,10 @@ The residency path uses only CuTe DSL. The former resident/selection sorting,
 binary-search lookup and adjacent-entry miss deduplication have been removed.
 Hash ownership merges duplicate loads while preserving all attention references;
 upstream top-k ordering remains part of the attention numerical contract.
+
+### Large Ascend clear grids
+
+`zero_page_fields` caps the flattened Ascend launch grid at 65535 programs
+and strides over remaining page/field ranges. The logical page count remains
+a runtime argument. Only selected fields are cleared; surrounding arena bytes
+must remain unchanged.

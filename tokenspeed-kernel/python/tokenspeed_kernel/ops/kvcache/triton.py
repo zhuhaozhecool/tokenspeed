@@ -447,7 +447,7 @@ def zero_byte_ranges(backing: torch.Tensor, ranges: list[tuple[int, int]]) -> No
     )
 
 
-@triton.jit(do_not_specialize=["num_fields"])
+@triton.jit(do_not_specialize=["num_fields", "num_ranges"])
 def _zero_page_fields_kernel(
     backing_ptr,
     pages_ptr,
@@ -455,22 +455,23 @@ def _zero_page_fields_kernel(
     # Runtime: the field count follows the cache group and the page count the
     # batch; neither may specialize the binary.
     num_fields,
+    num_ranges,
     BLOCK_SIZE: tl.constexpr,
 ):
-    entry = tl.program_id(0)
-    page = tl.load(pages_ptr + entry // num_fields).to(tl.int64)
-    field = fields_ptr + (entry % num_fields) * 3
-    range_offset = tl.load(field) + page * tl.load(field + 1)
-    range_size = tl.load(field + 2)
-    for start in range(
-        tl.program_id(1) * BLOCK_SIZE, range_size, tl.num_programs(1) * BLOCK_SIZE
-    ):
-        byte_offsets = start + tl.arange(0, BLOCK_SIZE)
-        tl.store(
-            backing_ptr + range_offset + byte_offsets,
-            0,
-            mask=byte_offsets < range_size,
-        )
+    for entry in range(tl.program_id(0), num_ranges, tl.num_programs(0)):
+        page = tl.load(pages_ptr + entry // num_fields).to(tl.int64)
+        field = fields_ptr + (entry % num_fields) * 3
+        range_offset = tl.load(field) + page * tl.load(field + 1)
+        range_size = tl.load(field + 2)
+        for start in range(
+            tl.program_id(1) * BLOCK_SIZE, range_size, tl.num_programs(1) * BLOCK_SIZE
+        ):
+            byte_offsets = start + tl.arange(0, BLOCK_SIZE)
+            tl.store(
+                backing_ptr + range_offset + byte_offsets,
+                0,
+                mask=byte_offsets < range_size,
+            )
 
 
 def zero_page_fields(
@@ -522,11 +523,16 @@ def zero_page_fields(
         num_ranges,
         min(tiles_per_range, triton.cdiv(max_field_bytes, block_size)),
     )
+    # Ascend's launch limit applies to the flattened grid. Stride the ranges
+    # when long-context admission exceeds it; every requested page is cleared.
+    if backing.device.type == "npu":
+        grid = (min(grid[0], 65535 // grid[1]), grid[1])
     _zero_page_fields_kernel[grid](
         backing,
         pages,
         fields,
         fields.shape[0],
+        num_ranges,
         BLOCK_SIZE=block_size,
         num_warps=4,
     )
