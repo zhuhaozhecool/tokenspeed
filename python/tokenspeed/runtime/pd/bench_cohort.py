@@ -135,7 +135,8 @@ class CohortStore:
             "expected_cached_tokens",
             "requests",
         }
-        if not isinstance(body, dict) or set(body) != required:
+        optional = {"expected_prefill_cached_tokens"}
+        if not isinstance(body, dict) or not required <= set(body) or set(body) - required - optional:
             raise CohortError(f"arm requires exactly {sorted(required)}")
         epoch, cohort_id = name(body["epoch"]), name(body["cohort_id"])
         batch = body["per_domain_batch"]
@@ -154,11 +155,16 @@ class CohortStore:
                 body[k]
                 for k in ("input_tokens", "output_tokens", "expected_cached_tokens")
             )
-            != (131072, 1024, 117964)
+            not in ((131072, 1024, 117964), (131072, 1024, 0))
         ):
             raise CohortError(
-                "Need finite positive timeout and exact 131072/1024/cache117964"
+                "Need finite positive timeout and exact 131072/1024 with D cache0 or117964"
             )
+        p_hit = body.get("expected_prefill_cached_tokens", body["expected_cached_tokens"])
+        if type(p_hit) is not int or (p_hit, body["expected_cached_tokens"]) not in (
+            (117964, 117964), (131071, 0), (131071, 117964)
+        ):
+            raise CohortError("Unsupported exact P/D cache contract")
         requests = body["requests"]
         if not isinstance(requests, list) or len(requests) != batch * 2:
             raise CohortError("Need exactly 2B expected requests")
@@ -277,8 +283,8 @@ class CohortStore:
                     binding["dp_rank"] != rank // 8
                     or binding["received"] is not True
                     or binding["terminal"] is not None
-                    or binding["p_cached_tokens"] != 117964
-                    or binding["d_hit_tokens"] != 117964
+                    or binding["p_cached_tokens"] != config.get("expected_prefill_cached_tokens", config["expected_cached_tokens"])
+                    or binding["d_hit_tokens"] != config["expected_cached_tokens"]
                     or binding["receive_monotonic_ns"] is None
                     or binding["receive_monotonic_ns"] < binding["bind_monotonic_ns"]
                     or not binding["rid"]
@@ -592,7 +598,10 @@ class CohortGate:
         if binding["room"] != context["room"] or (
             binding["p_cached_tokens"],
             binding["d_hit_tokens"],
-        ) != (117964, 117964):
+        ) != (
+            self.config.get("expected_prefill_cached_tokens", self.config["expected_cached_tokens"]),
+            self.config["expected_cached_tokens"],
+        ):
             self._leader(
                 lambda: self.store.abort(
                     self.config["epoch"],
