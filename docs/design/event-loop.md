@@ -645,3 +645,11 @@ For orientation, one iteration of `event_loop`:
   cache-owning rank still enters the replica MIN; raising would hang healthy
   peers. Clients are not failed. The D role never prefetches: its admission
   probes Device only.
+
+### Explicit benchmark cohorts
+
+A tagged cohort may hold completed remote-prefill events until the declared
+group has arrived. The default path has no hold queue. Failed/cancelled
+requests retain transport completion fences before scheduler release. The
+current benchmark implementation requires TP8/DP2 and is not a general
+production batching policy.

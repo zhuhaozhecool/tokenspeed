@@ -46,6 +46,7 @@ class DisaggDecodeExecutor:
         self._remote_cached_tokens: dict[str, int] = {}
         self._remote_bootstrap_logprobs: dict[str, float | None] = {}
         self._remote_spec_candidate_ids: dict[str, tuple[int, list[int]]] = {}
+        self._bench_cache_context: dict[str, dict] = {}
 
     def _bootstrap(self, request_id, info):
         if pd_audit_enabled():
@@ -97,6 +98,11 @@ class DisaggDecodeExecutor:
         # invalid row must not leave an earlier Prefill sender waiting forever.
         for request_id, receiver, request_pool_index, block_manifest in pending:
             self._admissions[request_id] = request_pool_index
+            if request_id.startswith("cmpl-bench."):
+                self._bench_cache_context[request_id] = {
+                    "room": int(receiver.bootstrap_room),
+                    "d_hit_tokens": int(block_manifest.prefix_len),
+                }
             if pd_audit_enabled():
                 topology = self.kv_manager.topology
                 emit_pd_audit(
@@ -221,7 +227,22 @@ class DisaggDecodeExecutor:
         return self._remote_spec_candidate_ids.pop(request_id, None)
 
     def pop_remote_cached_tokens(self, request_id: str) -> int:
+        self._bench_cache_context.pop(request_id, None)
         return self._remote_cached_tokens.pop(request_id)
+
+    def bench_completion_context(self, request_id: str) -> dict:
+        return dict(
+            self._bench_cache_context[request_id],
+            p_cached_tokens=self._remote_cached_tokens[request_id],
+        )
+
+    def discard_remote_completion(self, request_id: str) -> None:
+        """Drop host metadata only after the real transport completion/failure fence."""
+        self._bench_cache_context.pop(request_id, None)
+        self._remote_cached_tokens.pop(request_id, None)
+        self._remote_bootstrap_logprobs.pop(request_id, None)
+        self._remote_cache_slots.pop(request_id, None)
+        self._remote_spec_candidate_ids.pop(request_id, None)
 
     def pop_remote_bootstrap_logprob(self, request_id: str) -> float | None:
         """The prefill node's logprob of the bootstrap token, None if it sent none."""
