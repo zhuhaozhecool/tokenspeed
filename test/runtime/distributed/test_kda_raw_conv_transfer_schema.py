@@ -77,9 +77,7 @@ def contract(tp, axis, *, padding=256):
         ),
         page_bytes=1 << 20,
     )
-    kwargs = dict(model_config=ModelFacts())
-    if axis == 1:
-        kwargs["kda_conv_channel_axis"] = 1
+    kwargs = dict(model_config=ModelFacts(), kda_conv_channel_axis=axis)
     schema = build_cache_transfer_schema(raw.plan, **kwargs)
     schema.validate(raw.plan)
     return replace(raw, transfer_schema=schema)
@@ -213,12 +211,12 @@ def test_axis_must_exist_in_field_shape():
         )
 
 
-def test_regression_old_implicit_axis_cannot_map_lazy_rows_to_tp8():
+def test_wrong_channel_axis_cannot_map_lazy_rows_to_tp8():
     value = contract(8, 1)
     wrong = replace(
         value,
         transfer_schema=build_cache_transfer_schema(
-            value.plan, model_config=ModelFacts()
+            value.plan, model_config=ModelFacts(), kda_conv_channel_axis=0
         ),
     )
     with pytest.raises(UnsupportedPDLayoutError, match="local extent 3"):

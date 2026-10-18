@@ -212,7 +212,7 @@ def build_cache_transfer_schema(
     *,
     model_config: ModelConfig,
     draft_model_config: ModelConfig | None = None,
-    kda_conv_channel_axis: int = 0,
+    kda_conv_channel_axis: int,
 ) -> CacheTransferSchema:
     """Compile PD distribution semantics using the pool's declared KDA layout.
 

@@ -2004,5 +2004,5 @@ in `unified_path.md`, "Sparse KV offloading".
 The cache pool declares its convolution channel axis independently of the
 wire slab. Channel-major checkpoints partition axis 0; row-major raw history
 partitions axis 1. The schema validates the axis and physical field rank before
-building transfer fragments. Review callers before making this selection
-mandatory across all existing model recipes.
+building transfer fragments. The recipe API requires the channel-axis argument explicitly; legacy
+channel-major callers pass 0.
