@@ -21,9 +21,6 @@
 """Factories for PD KV transfer helpers."""
 
 from tokenspeed.runtime.layers.attention.kv_cache.recipes.plan import CacheMemoryPlan
-from tokenspeed.runtime.layers.attention.kv_cache.recipes.transfer import (
-    build_cache_transfer_schema,
-)
 from tokenspeed.runtime.pd.cache_protocol import (
     build_arena_cache_transfer_contract,
     build_cache_fields_by_producer_step,
@@ -54,12 +51,10 @@ def get_kv_args(
     # One big model, one arena: a draft's continuation-layer planes live in
     # the target pool's merged plan, so exactly one typed slab registration is
     # published for both target and draft caches.
-    kda_conv_channel_axis = getattr(token_to_kv_pool, "kda_conv_channel_axis", 0)
-    transfer_schema = build_cache_transfer_schema(
+    transfer_schema = token_to_kv_pool.build_transfer_schema(
         token_to_kv_pool.arena.plan,
         model_config=model_config,
         draft_model_config=draft_model_config,
-        kda_conv_channel_axis=kda_conv_channel_axis,
     )
     producer_schedule = build_cache_fields_by_producer_step(
         token_to_kv_pool.arena.plan,
@@ -81,11 +76,10 @@ def get_kv_args(
         wire_layout = CacheTransferContract(
             plan=logical_plan,
             group_specs=token_to_kv_pool.arena.cache_group_specs,
-            transfer_schema=build_cache_transfer_schema(
+            transfer_schema=token_to_kv_pool.build_transfer_schema(
                 logical_plan,
                 model_config=model_config,
                 draft_model_config=draft_model_config,
-                kda_conv_channel_axis=kda_conv_channel_axis,
             ),
         )
     return KVArgs(

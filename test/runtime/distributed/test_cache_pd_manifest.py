@@ -192,7 +192,6 @@ def test_recipe_layer_owns_transfer_schema_api() -> None:
             num_key_value_heads=8,
             hf_text_config=SimpleNamespace(),
         ),
-        kda_conv_channel_axis=0,
     )
 
     assert schema == CacheTransferSchema(
@@ -852,7 +851,6 @@ def test_pd_derives_ordinary_transfer_metadata_from_physical_plan(
         transfer_schema=build_cache_transfer_schema(
             layout.plan,
             model_config=model_config,
-            kda_conv_channel_axis=0,
         ),
     )
 

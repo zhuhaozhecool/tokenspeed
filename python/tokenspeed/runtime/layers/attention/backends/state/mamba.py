@@ -278,6 +278,18 @@ class MambaAttnBackend(AttentionBackend):
     # Whether the family's chunked tree verify scan fills the ReplaySSM payload.
     _verify_scan_writes_replay: bool = False
 
+    def _prepare_prefill_state_inputs(
+        self, conv_states, ssm_states, state_in_blocks, state_out_blocks
+    ):
+        """Prepare the current requests' initial states through the shared implementation."""
+        return _prepare_cache_prefill_state_inputs(
+            conv_states, ssm_states, state_in_blocks, state_out_blocks
+        )
+
+    def _store_prefill_state_rows(self, states, slab, blocks):
+        """Publish the current requests' final states; padding rows remain masked."""
+        store_state_rows(states, slab, blocks)
+
     def __init__(self, config: AttnConfig, spec: SoftmaxAttnConfig):
         super().__init__(config, spec)
         self.pad_slot_id = -1
@@ -1731,7 +1743,7 @@ class MambaAttnBackend(AttentionBackend):
             state_in_blocks, state_out_blocks, conv_states, ssm_states = (
                 self._layer_state(layer_id)
             )
-            recurrent_state, has_initial_states = _prepare_cache_prefill_state_inputs(
+            recurrent_state, has_initial_states = self._prepare_prefill_state_inputs(
                 conv_states,
                 ssm_states,
                 state_in_blocks,
@@ -1885,7 +1897,9 @@ class MambaAttnBackend(AttentionBackend):
             # The final state goes to the live slot. Capacity metadata pads the
             # request dimension with -1 blocks whose dummy scan result the
             # masked writer drops.
-            store_state_rows(last_recurrent_state, ssm_states, state_out_blocks)
+            self._store_prefill_state_rows(
+                last_recurrent_state, ssm_states, state_out_blocks
+            )
             if extend_seq_lens_cpu is not None:
                 # Padded output rows hold the dummy scan's results (or nothing);
                 # the outer forward reads the whole bucket.

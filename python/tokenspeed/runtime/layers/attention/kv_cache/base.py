@@ -236,6 +236,16 @@ class CachePool(ABC):
             f"from {self._field_layer_offset:d}, rank {rank:d}",
         )
 
+    def build_transfer_schema(self, plan, *, model_config, draft_model_config):
+        """Describe this pool's field partitioning for both physical and logical PD plans."""
+        from tokenspeed.runtime.layers.attention.kv_cache.recipes.transfer import (
+            build_cache_transfer_schema,
+        )
+
+        return build_cache_transfer_schema(
+            plan, model_config=model_config, draft_model_config=draft_model_config
+        )
+
     @property
     def paged_group_ids(self) -> tuple[str, ...]:
         """History groups this view's layers write KV into (sorted);
