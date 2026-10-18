@@ -145,6 +145,7 @@ def _partition_for_field(
     model_config: ModelConfig,
     draft_model_config: ModelConfig | None,
     inkling_layers: frozenset[int],
+    kda_conv_channel_axis: int,
 ) -> CacheFieldPartition | None:
     layer_id = cache_field_layer_id(field.field_id)
     source_model, source_layer_id = _source_model(
@@ -193,7 +194,14 @@ def _partition_for_field(
         head_dim = int(linear_config["head_dim"])
         if suffix == "conv_state":
             width = num_heads * head_dim
-            return CacheFieldPartition(0, 3 * width, (width, width, width))
+            if kda_conv_channel_axis >= len(field.shape):
+                raise ValueError(
+                    f"cache field {field.field_id!r} has no KDA conv channel "
+                    f"axis {kda_conv_channel_axis} in shape {field.shape}"
+                )
+            return CacheFieldPartition(
+                kda_conv_channel_axis, 3 * width, (width, width, width)
+            )
         return CacheFieldPartition(0, num_heads)
 
     return None
@@ -204,8 +212,15 @@ def build_cache_transfer_schema(
     *,
     model_config: ModelConfig,
     draft_model_config: ModelConfig | None = None,
+    kda_conv_channel_axis: int,
 ) -> CacheTransferSchema:
-    """Compile model-specific PD distribution semantics beside a pure plan."""
+    """Compile PD distribution semantics using the pool's declared KDA layout.
+
+    ``kda_conv_channel_axis`` is 0 for channel-major legacy checkpoints and
+    1 for row-major raw-conv checkpoints. It never changes physical storage.
+    """
+    if type(kda_conv_channel_axis) is not int or kda_conv_channel_axis not in (0, 1):
+        raise ValueError("KDA conv channel axis must be integer 0 or 1")
 
     inkling_layers = frozenset(
         cache_field_layer_id(field.field_id)
@@ -219,6 +234,7 @@ def build_cache_transfer_schema(
             model_config=model_config,
             draft_model_config=draft_model_config,
             inkling_layers=inkling_layers,
+            kda_conv_channel_axis=kda_conv_channel_axis,
         )
         if partition is not None:
             fields.append(CacheFieldTransferSpec(field.field_id, partition))
