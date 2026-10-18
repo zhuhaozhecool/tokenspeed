@@ -57,3 +57,10 @@ The residency path uses only CuTe DSL. The former resident/selection sorting,
 binary-search lookup and adjacent-entry miss deduplication have been removed.
 Hash ownership merges duplicate loads while preserving all attention references;
 upstream top-k ordering remains part of the attention numerical contract.
+
+### Ascend page compaction sort
+
+Column IDs and the invalid-column sentinel are converted to FP32 only when
+the table width is at most 2**24. These integers are exactly representable,
+so Sort can use AIV. Valid column IDs are unique; equal invalid keys are
+masked after gathering. Wider tables retain the integer path.

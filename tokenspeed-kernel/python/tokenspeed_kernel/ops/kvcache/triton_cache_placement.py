@@ -321,7 +321,15 @@ def _compact_dcp_pages_ascend(
     else:
         page_prefix[:, 0].zero_()
         page_prefix[:, 1:].copy_(valid.cumsum(1, dtype=torch.int32))
-    order = torch.where(valid, cols[None, :], table.shape[1]).sort(1).values
+    width = table.shape[1]
+    if width <= 1 << 24:
+        # Integer Sort runs on AICPU on Ascend. Column IDs and the invalid
+        # sentinel are exact in FP32 up to 2**24, allowing the AIV path.
+        # Valid keys are unique; equal invalid keys are masked after gather.
+        keys = torch.where(valid, cols[None, :].to(torch.float32), float(width))
+        order = keys.sort(1).values.to(torch.int64)
+    else:
+        order = torch.where(valid, cols[None, :], width).sort(1).values
     local_pages = ((blocks - 1) // degree + 1) * subpages + table % subpages
     packed = local_pages.gather(1, order.clamp_max(table.shape[1] - 1))
     out.copy_(torch.where(order < table.shape[1], packed, 0))
