@@ -1998,3 +1998,11 @@ KVStore disabled, using the target router directly. Local offloaded prefill
 and mixed-arena sleep/wake are unsupported. Eager and CUDA-graph decode
 use the same batch, access and accepted-writeback hooks; execution details are
 in `unified_path.md`, "Sparse KV offloading".
+
+### KDA raw-convolution transfer axis
+
+The cache pool declares its convolution channel axis independently of the
+wire slab. Channel-major checkpoints partition axis 0; row-major raw history
+partitions axis 1. The schema validates the axis and physical field rank before
+building transfer fragments. Review callers before making this selection
+mandatory across all existing model recipes.
