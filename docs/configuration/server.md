@@ -125,6 +125,12 @@ Every generation response includes the current version in
 `meta_info["weight_version"]`. RL trainers can use this value to identify the
 policy version that produced a sample.
 
+The SGLang-compatible `GET /flush_cache` and `POST /flush_cache` return the
+actual scheduler replies as `domains: [{"dp_rank": 0, "success": true}, ...]`.
+Every configured attention-DP domain must acknowledge success; a failed,
+duplicate or unidentified domain makes `success` false and HTTP status 400.
+The domain IDs come from workers, not from configured IDs filled in by HTTP.
+
 The SGLang-compatible `update_weights_from_distributed`,
 `update_weights_from_mooncake`, `update_weights_from_tensor`, and
 `update_weights_from_disk` requests accept an

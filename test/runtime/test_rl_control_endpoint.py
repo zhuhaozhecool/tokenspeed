@@ -249,6 +249,18 @@ class TestRouteSemantics:
         _llm, client = self._client()
         assert (client.get("/flush_cache").status_code) == (200)
         assert (client.post("/flush_cache").status_code) == (200)
+        assert client.get("/flush_cache").json()["domains"] == [
+            {"dp_rank": 0, "success": True}
+        ]
+
+    def test_flush_failure_is_not_reported_as_success(self):
+        llm, client = self._client()
+        llm.succeed = False
+        for method in (client.get, client.post):
+            response = method("/flush_cache")
+            assert response.status_code == 400
+            assert response.json()["success"] is False
+            assert response.json()["domains"] == [{"dp_rank": 0, "success": False}]
 
 
 class TestUnsupportedWeightUpdateSources:

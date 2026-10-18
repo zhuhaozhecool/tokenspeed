@@ -87,3 +87,7 @@ all outstanding HTTP requests and draining the normal completion path. That
 benchmark point fails. It cannot claim rollback of forwards already running in
 another domain. A new arm is rejected until all actual workers report terminal
 cleanup and no live bindings; epoch/cohort identities cannot be reused.
+
+The token adapter and management routes are reviewed separately from cohort
+release scheduling. Deployment must restrict benchmark management endpoints
+to the benchmark control plane; their disabled defaults are retained.
