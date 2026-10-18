@@ -67,10 +67,10 @@ masked after gathering. Wider tables retain the integer path.
 
 ### Native Ascend KVP metadata
 
-The optional metadata adapter writes compact page tables and per-query visible
-lengths into caller-owned persistent buffers on every invocation. The library
-is loaded before capture. Its current direct-launch ABI requires
-`TASK_QUEUE_ENABLE=0`; package/stream integration is a merge gate.
+The optional native page-compaction call selects a registered
+`kvcache/compact_kvp_pages_native` kernel. The provider owns loading its library
+and validating its ABI/stream constraints. The host retains caller-owned page
+buffers and the ordinary compaction fallback.
 
 ### Native Ascend KVP slots
 

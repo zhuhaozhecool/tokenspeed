@@ -138,43 +138,8 @@ def dsa_history_gather_workspace_bytes(
 
 
 def uses_ascend_dsa_prefill_q8(config: AttnConfig) -> bool:
-    from tokenspeed.runtime.layers.attention.dcp.prefill_query import (
-        ASCEND_DSA_PREFILL_Q8,
-    )
-
     spec = config.component(DSAConfig)
-    return spec is not None and spec.backend_name == ASCEND_DSA_PREFILL_Q8
-
-
-def ascend_dsa_prefill_q8_workspace_bytes(config: AttnConfig) -> int:
-    """History, bounded collective staging and contiguous SFA K/RoPE.
-
-    The staging fits a padded all-gather for normally distributed pages.
-    More uneven page owners use exact-count broadcasts into the same buffer.
-    """
-    spec = config.component(DSAConfig)
-    if spec is None or config.kv_cache_dtype != torch.bfloat16:
-        raise ValueError("Ascend Prefill Q8 workspace requires BF16 DSA")
-    if spec.index_k_format != "bf16":
-        raise ValueError("Ascend Prefill Q8 requires BF16 index-K")
-    rows = dsa_history_gather_workspace_rows(config.context_len, page_size=128)
-    stage_rows = rows + config.kvp_size * 128
-    max_queries = config.prefill_query_workspace_tokens
-    if max_queries is None or max_queries <= 0:
-        raise ValueError("Prefill Q8 requires its explicit max Prefill query capacity")
-    width = (max_queries + config.kvp_size - 1) // config.kvp_size
-    padded_queries = width * config.kvp_size
-    # Three BF16 and three INT32 exchange/order planes plus an invalid mask;
-    # topk values/positions/ids, and one INT32 cast of the existing owner map.
-    selection = (
-        padded_queries * spec.index_topk * (3 * 2 + 3 * 4 + 1)
-        + width * spec.index_topk * (2 + 8 + 4)
-        + rows * 4
-    )
-    history = 2 * (
-        rows * 2 * spec.kv_cache_dim + stage_rows * spec.kv_cache_dim
-    ) + config.max_bs * (rows * 4 * 8 + 2 * 4)
-    return history + selection
+    return spec is not None and spec.backend_name == "ascend_dsa_prefill_q8"
 
 
 @dataclass(kw_only=True)
