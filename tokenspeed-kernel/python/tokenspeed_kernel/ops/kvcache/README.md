@@ -64,3 +64,8 @@ upstream top-k ordering remains part of the attention numerical contract.
 and strides over remaining page/field ranges. The logical page count remains
 a runtime argument. Only selected fields are cleared; surrounding arena bytes
 must remain unchanged.
+
+
+The same flattened 65535-program limit applies to `copy_state_rows`. Large state
+copies split along logical rows while retaining global layer indices and physical
+row strides. CUDA keeps one launch. The start row is a runtime argument.

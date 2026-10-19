@@ -637,7 +637,7 @@ def copy_page_fields(
 # -----------------------------------------------------------------------------
 
 
-@triton.jit(do_not_specialize=["rows_per_layer"])
+@triton.jit(do_not_specialize=["rows_per_layer", "work_start"])
 def _copy_state_rows_kernel(
     src_addresses_ptr,
     dst_addresses_ptr,
@@ -646,6 +646,7 @@ def _copy_state_rows_kernel(
     src_rows_ptr,
     dst_rows_ptr,
     rows_per_layer,
+    work_start,
     ROW_I32: tl.constexpr,
     BLOCK_I32: tl.constexpr,
     ENABLE_PDL: tl.constexpr,
@@ -659,7 +660,7 @@ def _copy_state_rows_kernel(
     """
     if ENABLE_PDL:
         tl.extra.cuda.gdc_wait()
-    work_index = tl.program_id(0)
+    work_index = tl.program_id(0) + work_start
     chunk_index = tl.program_id(1)
     layer_index = work_index // rows_per_layer
 
@@ -699,7 +700,7 @@ def copy_state_rows(
     src_row_strides: torch.Tensor,
     dst_row_strides: torch.Tensor,
 ) -> None:
-    """Copy state rows between per-layer slab pairs in one Triton launch.
+    """Copy state rows between per-layer slabs with a bounded device grid.
 
     Replaces per-layer ``dst[dst_rows] = src[src_rows]`` gather/scatter chains
     (e.g. MTP verify-scratch seeding and post-verify state commit) with a
@@ -723,7 +724,8 @@ def copy_state_rows(
             int32 units.
 
     Returns:
-        None. Rows are copied in place in one launch.
+        None. Rows are copied in place. Ascend launches exceeding 65535
+        programs are split along the row axis; other devices use one launch.
     """
     enable_pdl = pdl_enabled()
     total = src_rows.numel()
@@ -752,19 +754,28 @@ def copy_state_rows(
     row_i32 = row_bytes // 4
     block_i32 = 1024
     chunks = triton.cdiv(row_i32, block_i32)
-    _copy_state_rows_kernel[(total, chunks)](
-        src_addresses,
-        dst_addresses,
-        src_row_strides,
-        dst_row_strides,
-        src_rows,
-        dst_rows,
-        total // num_layers,
-        ROW_I32=row_i32,
-        BLOCK_I32=block_i32,
-        ENABLE_PDL=enable_pdl,
-        **({"launch_pdl": True} if enable_pdl else {}),
+    # Ascend flattens the logical Triton grid into coreDim (maximum 65535).
+    # Keep the row tiling, and split only grids that exceed that launch ABI.
+    rows_per_launch = (
+        min(total, 65535 // chunks) if src_addresses.device.type == "npu" else total
     )
+    if rows_per_launch == 0:
+        raise ValueError("one state row exceeds the NPU kernel launch grid limit")
+    for start in range(0, total, rows_per_launch):
+        _copy_state_rows_kernel[(min(total - start, rows_per_launch), chunks)](
+            src_addresses,
+            dst_addresses,
+            src_row_strides,
+            dst_row_strides,
+            src_rows,
+            dst_rows,
+            total // num_layers,
+            start,
+            ROW_I32=row_i32,
+            BLOCK_I32=block_i32,
+            ENABLE_PDL=enable_pdl,
+            **({"launch_pdl": True} if enable_pdl else {}),
+        )
 
 
 @triton.jit(do_not_specialize=["num_rows", "state_width"])

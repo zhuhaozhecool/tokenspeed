@@ -79,3 +79,8 @@ Verify the gRPC servicer and the source paths together:
 PYTHONPATH="${PWD}/python:${PWD}/tokenspeed-kernel/python:${PWD}/tokenspeed-kernel-npu/python:${PYTHONPATH:-}" \
     python -m smg_grpc_servicer.tokenspeed --help
 ```
+
+
+KVP Prefill can expand queries into more than 1024 one-token rows. The DSA adapter
+splits that batch axis at the native SFA request limit, preserving KV lengths and
+page tables; this does not change the model's Prefill chunk size.

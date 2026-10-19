@@ -673,3 +673,7 @@ Transport services may call `pd.server_info.canonical_pd_server_info` to obtain
 cache-compatible discovery arguments. It delegates to the registered plugin
 provider and keeps the execution configuration unchanged; without a provider,
 the original discovery values are preserved.
+
+
+HTTP cache flush reports the aggregate result and the per-domain acknowledgments.
+A failed domain remains a failed response; receipt of a reply alone is not success.

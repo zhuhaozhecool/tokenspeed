@@ -256,6 +256,40 @@ class AscendDSAKernels:
         *,
         sparse_mode,
     ):
+        # KVP prefill represents every causal query as a one-token request.
+        # The native SFAD ABI permits only 1024 requests per invocation.
+        # Slice that query-batch axis after selection/cache writes, keeping
+        # the same visible KV lengths, page rows, and rank-major head layout.
+        batch = q_ends.numel()
+        if batch > 1024:
+            if packed_query.shape[1] != batch:
+                raise ValueError(
+                    "Ascend DSA batching above 1024 requests requires "
+                    "one query token per request"
+                )
+            outputs = None
+            for start in range(0, batch, 1024):
+                end = min(start + 1024, batch)
+                part = self.attention_partial(
+                    packed_query[:, start:end].contiguous(),
+                    key,
+                    indices[start:end].contiguous(),
+                    valid_chunks[start:end].contiguous(),
+                    (q_ends[start:end] - start).contiguous(),
+                    kv_lengths[start:end].contiguous(),
+                    table[start:end].contiguous(),
+                    scale,
+                    sparse_mode=sparse_mode,
+                )
+                if outputs is None:
+                    # O is [H,T,512]; both LSE components are [1,T,H].
+                    outputs = tuple(
+                        value.new_empty((value.shape[0], batch, *value.shape[2:]))
+                        for value in part
+                    )
+                for output, value in zip(outputs, part):
+                    output[:, start:end].copy_(value)
+            return outputs
         output, softmax_max, softmax_sum = self._attention(
             packed_query,
             key,

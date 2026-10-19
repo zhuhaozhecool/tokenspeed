@@ -410,8 +410,15 @@ async def continue_generation(request: Request) -> JSONResponse:
 @router.api_route("/flush_cache", methods=["GET", "POST"])
 async def flush_cache(request: Request) -> JSONResponse:
     async def _do() -> dict[str, Any]:
-        await _llm(request).flush_cache()
-        return {"success": True, "message": "Cache flushed."}
+        result = await _llm(request).flush_cache()
+        return {
+            "success": result.success,
+            "message": "Cache flushed." if result.success else "Cache flush failed.",
+            "domains": [
+                {"dp_rank": domain.dp_rank, "success": domain.success}
+                for domain in result.domains
+            ],
+        }
 
     return await _guarded(_do)
 

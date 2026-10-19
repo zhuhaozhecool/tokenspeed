@@ -63,6 +63,9 @@ def _apply_stop_conditions_kernel(
     row_mask = rows < batch_size
     slots = tl.load(req_pool_indices_ptr + rows, mask=row_mask, other=padding_index)
     live = row_mask & (slots != padding_index)
+    # Inactive gather lanes can still be read before the Ascend mask select.
+    # Keep their addresses in bounds as well as masking their values.
+    slots = tl.where(live, slots, 0)
     is_extend = rows < num_extends
     valid = tl.load(valid_cache_lengths_ptr + slots, mask=live, other=0)
     limits = tl.load(token_limits_ptr + slots, mask=live, other=0)
@@ -78,8 +81,9 @@ def _apply_stop_conditions_kernel(
     )
     has_output = live & (~is_extend | (rows < num_prefill_outputs))
     token_mask = has_output[:, None] & (columns[None, :] < width[:, None])
+    token_offsets = tl.where(token_mask, first_token[:, None] + columns[None, :], 0)
     tokens = tl.load(
-        output_tokens_ptr + first_token[:, None] + columns[None, :],
+        output_tokens_ptr + token_offsets,
         mask=token_mask,
         other=-1,
     )
@@ -283,7 +287,7 @@ def apply_stop_conditions(
         raise ValueError("apply_stop_conditions needs colocated tensors")
     if batch_size == 0:
         return
-    if not req_pool_indices.is_cuda:
+    if req_pool_indices.device.type not in ("cuda", "npu"):
         _apply_stop_conditions_torch(
             req_pool_indices,
             output_tokens,
@@ -303,7 +307,9 @@ def apply_stop_conditions(
 
     _apply_stop_conditions_kernel[(triton.cdiv(batch_size, _BLOCK),)](
         req_pool_indices,
-        output_tokens,
+        # Incomplete prefill chunks can have no sampled outputs. Ascend
+        # still requires a valid base pointer for fully masked loads.
+        output_tokens if output_tokens.numel() else accept_lengths,
         accept_lengths,
         input_lengths,
         # An empty extend span still needs a valid pointer.
