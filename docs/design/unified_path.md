@@ -917,6 +917,15 @@ packs tokens and accept lengths into one region (`_output_pack_buf`), so its
 Triton backends return separate token and length buffers and take the
 executor's two-copy path (`get_packed_output_d2h` returns None).
 
+### Logits capture state follows the tensor's device
+
+The logits processor queries capture on the tensor's accelerator module;
+CPU tensors have no capture. Lazy communication-state probes stay outside
+capture and use the TP group's configured device collective, including HCCL
+on NPU. The multicast argmax provider retains its NVIDIA eligibility vote;
+an ineligible group keeps the portable vocabulary-parallel argmax or the
+plain gather, without entering CUDA APIs on another device.
+
 ## What stays graph-only
 
 Enumerated residue in `ForwardStepRunner.__call__`, all tied to the mechanics
