@@ -509,6 +509,9 @@ class LogitsProcessor(nn.Module):
         Returns:
             The state, or None when this group must use the gather path.
         """
+        if not current_platform().is_nvidia:
+            return None
+
         device = lm_head.weight.device
         key = (
             self.tp_group,
@@ -993,7 +996,10 @@ class LogitsProcessor(nn.Module):
             if self.do_argmax and not require_full_vocab:
                 if (
                     self._dist_argmax_state is self._LOGITS_DIST_ARGMAX_UNINITIALIZED
-                    and not torch.cuda.is_current_stream_capturing()
+                    and not (
+                        current_platform().is_nvidia
+                        and torch.cuda.is_current_stream_capturing()
+                    )
                 ):
                     self._dist_argmax_state = self._init_dist_argmax_state(lm_head)
 
@@ -1015,7 +1021,10 @@ class LogitsProcessor(nn.Module):
             )
             if state is self._LOGITS_AG_STATE_UNINITIALIZED:
                 # create_state rendezvouses; leave it for an eager call.
-                if torch.cuda.is_current_stream_capturing():
+                if (
+                    current_platform().is_nvidia
+                    and torch.cuda.is_current_stream_capturing()
+                ):
                     state = None
                 else:
                     state = self._all_gather_state = self._init_all_gather_state(

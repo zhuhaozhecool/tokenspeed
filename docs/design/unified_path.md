@@ -20,6 +20,13 @@ path nothing exercised routinely.
 
 ## Invariants
 
+### Platform-specific logits collectives
+
+The multicast logits gather and distributed argmax are NVIDIA-only. Their
+initialization and CUDA capture queries must be guarded by platform eligibility;
+other platforms retain the standard TP logits collective, including single-DP
+Prefill. This does not change the sampling or vocabulary layout contract.
+
 ### One decode metadata path
 
 `AttentionBackend.refresh_decode_metadata(bs, actual_bs, req_pool_indices,

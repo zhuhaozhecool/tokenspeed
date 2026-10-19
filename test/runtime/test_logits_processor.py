@@ -104,6 +104,51 @@ def test_tp_logits_all_gather_handles_zero_rows(monkeypatch):
     assert tuple(output.next_token_logits.shape) == (0, 6)
 
 
+@pytest.mark.parametrize("do_argmax", [False, True])
+def test_non_nvidia_tp_logits_use_standard_collective(monkeypatch, do_argmax):
+    from transformers import PretrainedConfig
+
+    monkeypatch.setattr(
+        logits_processor_module,
+        "current_platform",
+        lambda: SimpleNamespace(is_nvidia=False, is_amd=False),
+    )
+    monkeypatch.setattr(
+        torch.cuda,
+        "is_current_stream_capturing",
+        lambda: pytest.fail("non-NVIDIA logits must not query CUDA capture"),
+    )
+    monkeypatch.setitem(global_server_args_dict, "numerics", "fast")
+    processor = LogitsProcessor(
+        config=PretrainedConfig(vocab_size=8),
+        tp_rank=0,
+        tp_size=2,
+        tp_group=(0, 1),
+        do_argmax=do_argmax,
+        dp_lm_head_tp=False,
+    )
+    hidden = torch.tensor([[1, 2], [3, 4]], dtype=torch.bfloat16)
+    lm_head = torch.nn.Linear(2, 4, bias=False, dtype=torch.bfloat16)
+    with torch.no_grad():
+        lm_head.weight.copy_(torch.arange(8).reshape(4, 2))
+    local_logits = hidden @ lm_head.weight.T
+    other_logits = local_logits + 32
+
+    def collective(output, logits, group):
+        output.copy_(torch.cat((logits, other_logits), dim=0))
+
+    monkeypatch.setattr(logits_processor_module, "all_gather_single", collective)
+    metadata = LogitsMetadata(forward_mode=ForwardMode.DECODE, query_shard=None)
+    output = processor._get_logits(hidden, lm_head, metadata, require_full_vocab=False)
+    torch.testing.assert_close(output, torch.cat((local_logits, other_logits), dim=1))
+    assert (
+        processor.acquire_dist_argmax_state(
+            lm_head, max_M=2, skip_ping_pong=False, dtype=hidden.dtype
+        )
+        is None
+    )
+
+
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("cached", [False, True])
 def test_tp_logits_gather_preserves_dtype(monkeypatch, dtype, cached):
