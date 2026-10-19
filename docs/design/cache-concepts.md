@@ -1362,6 +1362,15 @@ not fit, the victim is aborted instead of imaged (`scheduler.md` §2), so a
 capacity block never waits on the Host. `--retraction-snapshot-ratio 0`
 is the pool-less engine, where every capacity block aborts.
 
+### Pool-owned transfer partitioning
+
+PD asks the cache pool's `build_transfer_schema` for both its physical arena
+plan and the full logical plan. The base pool preserves the common recipe.
+A plugin with a different field layout overrides this method and validates
+its schema against each supplied plan; address planning and transfer lifetime
+remain owned by the host. Linear-attention backends may override the initial
+state gather and final state store independently of the shared prefill flow.
+
 ## Virtual block placement within a shared physical plan
 
 KV parallelism (KVP, `--kv-parallel-size`, PD roles only) is a storage

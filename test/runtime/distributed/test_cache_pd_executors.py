@@ -501,7 +501,12 @@ def test_cache_factory_exposes_only_typed_arena() -> None:
 
     layout = _layout()
     buffer = torch.zeros(layout.plan.arena_bytes, dtype=torch.uint8)
+    from tokenspeed.runtime.layers.attention.kv_cache.recipes.transfer import (
+        build_cache_transfer_schema,
+    )
+
     pool = SimpleNamespace(
+        build_transfer_schema=build_cache_transfer_schema,
         arena=SimpleNamespace(
             supports_disaggregation=True,
             plan=layout.plan,
