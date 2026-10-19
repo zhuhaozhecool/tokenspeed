@@ -137,6 +137,11 @@ def dsa_history_gather_workspace_bytes(
     )
 
 
+def uses_ascend_dsa_prefill_q8(config: AttnConfig) -> bool:
+    spec = config.component(DSAConfig)
+    return spec is not None and spec.backend_name == "ascend_dsa_prefill_q8"
+
+
 @dataclass(kw_only=True)
 class DSAConfig(MLAConfig):
     is_dsa: ClassVar[bool] = True

@@ -194,6 +194,18 @@ class HybridLinearAttnBackend(AttentionBackend):
             max_bs, draft_token_num
         )
 
+    def preallocate_history_gather_workspace(self, max_model_len: int) -> int:
+        # Only the paged full-attention child gathers token histories.
+        return self.full_attn_backend.preallocate_history_gather_workspace(
+            max_model_len
+        )
+
+    def history_gather_workspace(self):
+        return self.full_attn_backend.history_gather_workspace()
+
+    def adopt_history_gather_workspace(self, workspace) -> None:
+        self.full_attn_backend.adopt_history_gather_workspace(workspace)
+
     def register_step_counter(self, step_counter):
         # Hybrid layerwise transfer needs one global step per model layer,
         # including both full-attention and mamba layers. Normal attention

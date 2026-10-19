@@ -15,6 +15,31 @@ This scheduler/lifecycle operation consumes a CPU range list outside CUDA graph
 capture. Capturing it fails explicitly rather than retaining a temporary pinned
 metadata pointer in a graph. Model forward graph replay is unchanged.
 
+### Ascend page compaction sort
+
+Column IDs and the invalid-column sentinel are converted to FP32 only when
+the table width is at most 2**24. These integers are exactly representable,
+so Sort can use AIV. Valid column IDs are unique; equal invalid keys are
+masked after gathering. Wider tables retain the integer path.
+
+### Native Ascend KVP metadata
+
+The optional native page-compaction call selects a registered
+`kvcache/compact_kvp_pages_native` kernel. The provider owns loading its library
+and validating its ABI/stream constraints. The host retains caller-owned page
+buffers and the ordinary compaction fallback.
+
+### Native Ascend KVP slots
+
+The slot adapter writes physical owner slots and marks null/foreign entries
+with -1. INT32/INT64 input contracts are validated before launching. The
+optional direct native ABI currently requires `TASK_QUEUE_ENABLE=0`.
+
+The optional native compaction facade returns whether a leaf ran. Missing
+registration or a leaf declining before mutation uses the existing Torch/AIV-sort
+path. Legacy leaves returning `None` still count as successful launches. An
+explicit invalid kernel override and any launch exception remain errors.
+
 ## Sparse KV offloading
 
 `offload.py` is the runtime boundary. NVIDIA uses the registered
