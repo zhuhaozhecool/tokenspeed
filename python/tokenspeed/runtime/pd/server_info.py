@@ -40,7 +40,9 @@ def canonical_pd_server_info(server_args: Mapping[str, object]) -> dict[str, obj
     ):
         existing = result.get("execution_attention_backend")
         if existing is not None and existing != backend:
-            raise ValueError("Conflicting execution attention backend in PD server info")
+            raise ValueError(
+                "Conflicting execution attention backend in PD server info"
+            )
         result["execution_attention_backend"] = backend
         result["attention_backend"] = "dsa"
     return result

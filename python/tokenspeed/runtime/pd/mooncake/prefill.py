@@ -632,9 +632,9 @@ class MooncakeKVManagerPrefill(MooncakeKVManagerBase):
                             pages=int(src_pages.size),
                             bytes_per_page=fragment.bytes_per_row
                             * fragment.rows_per_page,
-                            descriptors_per_page=1
-                            if contiguous_destination
-                            else fragment.rows_per_page,
+                            descriptors_per_page=(
+                                1 if contiguous_destination else fragment.rows_per_page
+                            ),
                         )
                     if fragment.rows_per_page == 1:
                         field_rows.append(

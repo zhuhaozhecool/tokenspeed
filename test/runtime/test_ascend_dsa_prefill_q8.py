@@ -25,6 +25,7 @@ from threading import Barrier
 
 import pytest
 import torch
+
 from tokenspeed.runtime.layers.attention.dcp.ascend_selection import (
     PrefillKVPSelectionWorkspace,
     kvp_rank_major_topk,
@@ -262,9 +263,11 @@ def test_kvp_bf16_selection_retains_owner_order_and_request_ids(
     for qlen, prefix in zip(lengths, prefixes):
         count = (qlen + prefix + page - 1) // page
         pages = tuple(
-            2 * (8 + j * degree) + j % 2
-            if fragmented
-            else 2 * (1 + (j * 5) % 127) + j % 2
+            (
+                2 * (8 + j * degree) + j % 2
+                if fragmented
+                else 2 * (1 + (j * 5) % 127) + j % 2
+            )
             for j in range(count)
         )
         hosts.append(

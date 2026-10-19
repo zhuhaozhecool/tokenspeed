@@ -26,7 +26,6 @@ import os
 
 import torch
 import torch_npu
-
 from tokenspeed_kernel_npu._triton import tl, triton
 
 

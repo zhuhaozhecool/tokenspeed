@@ -880,7 +880,9 @@ class EventLoop:
             if self._device.role is DeviceRole.PD_DECODE:
                 # The prompt was computed on the prefill node.
                 state.computed_length = state.input_length
-                if not self._pd_hooks.admit_cohort_request(spec.request_id, state, bootstrap):
+                if not self._pd_hooks.admit_cohort_request(
+                    spec.request_id, state, bootstrap
+                ):
                     continue
             self.output_processor.register(spec.request_id, state)
             # EPD prefill: an encode-routed request is staged OUT of the

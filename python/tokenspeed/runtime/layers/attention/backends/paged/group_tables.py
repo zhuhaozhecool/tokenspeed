@@ -343,7 +343,12 @@ class GroupTableStacks:
         """Refresh ``decode_locs[:, : bs * tokens_per_req]`` from the current
         stack and the live ``seq_lens`` (one launch for every group)."""
         decode_write_locations(
-            self.tables, self.page_sizes, seq_lens, self.decode_locs, bs, tokens_per_req,
+            self.tables,
+            self.page_sizes,
+            seq_lens,
+            self.decode_locs,
+            bs,
+            tokens_per_req,
             page_sizes_cpu=self.page_sizes_cpu,
         )
 

@@ -60,19 +60,36 @@ def test_causal_query_batches_match_one_native_request(tokens):
     query = torch.randn(8, tokens, 8, 576, dtype=torch.bfloat16, device="npu") * 0.1
     key = torch.randn(pages, 128, 1, 576, dtype=torch.bfloat16, device="npu") * 0.1
     before = key.clone()
-    indices = torch.arange(2048, dtype=torch.int32, device="npu").view(1, 1, -1).expand(tokens, 1, -1).contiguous()
+    indices = (
+        torch.arange(2048, dtype=torch.int32, device="npu")
+        .view(1, 1, -1)
+        .expand(tokens, 1, -1)
+        .contiguous()
+    )
     chunks = torch.full((tokens,), pages, dtype=torch.int32, device="npu")
     table = torch.arange(pages, dtype=torch.int32, device="npu").view(1, -1)
     reference = kernels.attention_partial(
-        query, key, indices, chunks,
+        query,
+        key,
+        indices,
+        chunks,
         torch.tensor([tokens], dtype=torch.int32, device="npu"),
         torch.tensor([tokens], dtype=torch.int32, device="npu"),
-        table, 576**-0.5, sparse_mode=3,
+        table,
+        576**-0.5,
+        sparse_mode=3,
     )
     ends = torch.arange(1, tokens + 1, dtype=torch.int32, device="npu")
     actual = kernels.attention_partial(
-        query, key, indices, chunks, ends, ends,
-        table.expand(tokens, -1).contiguous(), 576**-0.5, sparse_mode=3,
+        query,
+        key,
+        indices,
+        chunks,
+        ends,
+        ends,
+        table.expand(tokens, -1).contiguous(),
+        576**-0.5,
+        sparse_mode=3,
     )
     torch.npu.synchronize()
     assert torch.equal(key, before)

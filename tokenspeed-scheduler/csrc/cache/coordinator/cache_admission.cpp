@@ -246,8 +246,7 @@ private:
     // A non-empty tail slot is copied in its current bucket, like a Host
     // hit's destination. Its fresh copy cannot consume a hole in another
     // bucket even though ordinary dense growth can.
-    void collectTailCopyBuckets(std::size_t i, std::vector<std::int64_t>& need,
-                                std::int64_t& dense_need) {
+    void collectTailCopyBuckets(std::size_t i, std::vector<std::int64_t>& need, std::int64_t& dense_need) {
         if (!geometry_[i].HasTokenSpan()) {
             return;
         }
@@ -270,13 +269,12 @@ private:
                 }
             }
         }
-        if (completed_ != nullptr && completed_->owner_continues && completed_->tail &&
-            num_computed_tokens_ && !groups_[i].Spec().replayable) {
+        if (completed_ != nullptr && completed_->owner_continues && completed_->tail && num_computed_tokens_ &&
+            !groups_[i].Spec().replayable) {
             const std::int32_t granularity = geometry_[i].BlockGranularity();
             const std::int32_t tokens = *num_computed_tokens_;
             const std::int32_t tail_first = (tokens - tokens % prefix_granularity_) / granularity;
-            const std::int32_t first =
-                std::max(tail_first, geometry_[i].ExpiredBlocksAt(groups_[i].Spec(), tokens));
+            const std::int32_t first = std::max(tail_first, geometry_[i].ExpiredBlocksAt(groups_[i].Spec(), tokens));
             const std::int32_t past_end = (tokens + granularity - 1) / granularity;
             const auto blocks = demands_[i].table->Blocks();
             for (std::int32_t slot = first; slot < std::min(past_end, demands_[i].table->NumBlocks()); ++slot) {
@@ -640,9 +638,8 @@ std::optional<AdmissionPlan> planAdmission(const std::vector<CacheGroup>& groups
     if (!planner.Plan()) {
         return std::nullopt;
     }
-    return AdmissionPlan{.prefix = std::move(prefix),
-                         .victims = std::move(victims),
-                         .tail_copy_sources = planner.TakeTailCopySources()};
+    return AdmissionPlan{
+        .prefix = std::move(prefix), .victims = std::move(victims), .tail_copy_sources = planner.TakeTailCopySources()};
 }
 
 // The same progress without the tail it would publish: the full pages still

@@ -247,9 +247,12 @@ def test_prefill_sample_offset_ignores_how_the_prompt_was_split(device):
         cache_lengths[5] = prefix
         cache_lengths[2] = 41  # another request's decode frontier stays put
         info = info_cls(
-            req_pool_indices=torch.tensor([5], device=device), valid_cache_lengths=cache_lengths
+            req_pool_indices=torch.tensor([5], device=device),
+            valid_cache_lengths=cache_lengths,
         )
-        out = offsets(info, torch.tensor([prompt - prefix], dtype=torch.int32, device=device))
+        out = offsets(
+            info, torch.tensor([prompt - prefix], dtype=torch.int32, device=device)
+        )
         assert out.valid_cache_lengths[5].item() == prompt - 1
         assert out.valid_cache_lengths[2].item() == 41
         # The runtime table itself is untouched; advance reads it afterwards.

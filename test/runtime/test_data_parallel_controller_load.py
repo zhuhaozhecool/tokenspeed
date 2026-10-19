@@ -397,10 +397,13 @@ def test_pd_room_routes_both_legs_under_every_policy(monkeypatch):
             controller.handle_load_snapshot(snapshot(1, num_running_reqs=100))
             for room in (101, 102, 103, 104):
                 req = TokenizedGenerateReqInput(
-                    rid=f"pd-{room}", input_ids=[7, 7, room],
+                    rid=f"pd-{room}",
+                    input_ids=[7, 7, room],
                     sampling_params=SamplingParams(max_new_tokens=6),
-                    bootstrap_host="prefill", bootstrap_port=8998,
-                    bootstrap_room=room, data_parallel_rank=(room + 1) % 2,
+                    bootstrap_host="prefill",
+                    bootstrap_port=8998,
+                    bootstrap_room=room,
+                    data_parallel_rank=(room + 1) % 2,
                 )
                 controller.dispatch_generate_request(req)
             assert [x.bootstrap_room for x in controller.workers[0].sent] == [102, 104]

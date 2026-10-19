@@ -21,11 +21,11 @@
 """CPU byte-level coverage of actual KDA raw-conv checkpoint dimensions."""
 
 from dataclasses import dataclass, replace
+from test.runtime.cache_pd_test_utils import group, layout, segment
 
 import numpy as np
 import pytest
 
-from test.runtime.cache_pd_test_utils import group, layout, segment
 from tokenspeed.runtime.layers.attention.kv_cache.recipes.transfer import (
     build_cache_transfer_schema,
 )
@@ -114,9 +114,9 @@ def test_qkv_raw_history_reassembled_exactly_with_strides(
         decode_tp_size=destination_tp,
         prefill_layout=source,
         decode_layout=destination,
-        prefill_field_ids=None
-        if scope == "all-fields"
-        else frozenset({"layer.0.conv_state"}),
+        prefill_field_ids=(
+            None if scope == "all-fields" else frozenset({"layer.0.conv_state"})
+        ),
     )
     source_field = source.plan.field("layer.0.conv_state")
     destination_field = destination.plan.field("layer.0.conv_state")
@@ -164,9 +164,9 @@ def test_qkv_raw_history_reassembled_exactly_with_strides(
                     ]
                     counts[dst : dst + width] += 1
             assert bytes(input_bytes) == untouched
-        assert np.all(counts == 1), (
-            "Q/K/V and all three raw-history rows must be covered exactly once"
-        )
+        assert np.all(
+            counts == 1
+        ), "Q/K/V and all three raw-history rows must be covered exactly once"
         assert output[begin : begin + destination_field.payload_bytes] == raw_bytes(
             destination_tp, destination_rank, axis
         )

@@ -23,7 +23,9 @@ from tokenspeed.runtime.entrypoints.engine import Engine
 from tokenspeed.runtime.utils.server_args import ServerArgs
 
 
-def _real_handler(server_args, *, can_clear_cache_fn, clear_cache_fn=None, device, global_rank=0):
+def _real_handler(
+    server_args, *, can_clear_cache_fn, clear_cache_fn=None, device, global_rank=0
+):
     """Construct a real RequestHandler for unit tests.
 
     Only the two collaborators the test host genuinely lacks are patched out:
@@ -734,13 +736,20 @@ class TestEngineStampsL3Version:
 
 class TestCombinedFlushCacheOutput:
     def test_actual_domain_receipts_survive_engine_ipc(self):
-        output = combined_flush_cache_output([
-            FlushCacheReqOutput(success=True, dp_rank=0),
-            FlushCacheReqOutput(success=False, dp_rank=1),
-        ])
-        decoded = MsgpackDecoder(ipc_message_union()).decode(MsgpackEncoder().encode(output))
+        output = combined_flush_cache_output(
+            [
+                FlushCacheReqOutput(success=True, dp_rank=0),
+                FlushCacheReqOutput(success=False, dp_rank=1),
+            ]
+        )
+        decoded = MsgpackDecoder(ipc_message_union()).decode(
+            MsgpackEncoder().encode(output)
+        )
         assert decoded == output
-        assert [(domain.dp_rank, domain.success) for domain in decoded.domains] == [(0, True), (1, False)]
+        assert [(domain.dp_rank, domain.success) for domain in decoded.domains] == [
+            (0, True),
+            (1, False),
+        ]
 
     def test_empty_results_are_failure(self):
         output = combined_flush_cache_output([])
@@ -754,7 +763,10 @@ class TestCombinedFlushCacheOutput:
             ]
         )
         assert not (output.success)
-        assert [(domain.dp_rank, domain.success) for domain in output.domains] == [(0, True), (1, False)]
+        assert [(domain.dp_rank, domain.success) for domain in output.domains] == [
+            (0, True),
+            (1, False),
+        ]
 
     def test_all_success_is_success(self):
         output = combined_flush_cache_output(
@@ -768,9 +780,9 @@ class TestCombinedFlushCacheOutput:
 
     def test_missing_duplicate_or_unknown_actual_domain_is_failure(self):
         for ranks in [(None, None), (0, 0), (0, 2)]:
-            output = combined_flush_cache_output([
-                FlushCacheReqOutput(success=True, dp_rank=rank) for rank in ranks
-            ])
+            output = combined_flush_cache_output(
+                [FlushCacheReqOutput(success=True, dp_rank=rank) for rank in ranks]
+            )
             assert not output.success
 
 

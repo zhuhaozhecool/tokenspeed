@@ -143,18 +143,21 @@ def ascend_kvp_index_partial(backend, index_cache, q_ends, kv_lengths, table, kw
         local_tokens=local_tokens,
     )
     local = backend._dcp.metadata(start=0, end=table.shape[0])
-    return backend._indexer_kernels.index_partial(
-        kwargs["index_query"],
-        index_cache,
-        kwargs["index_weights"],
-        q_ends,
-        local.seq_lens,
-        local.page_table,
-        spec.index_topk,
-        local.init_counts,
-        local.local_counts,
-        sparse_mode=3,
-    ), local
+    return (
+        backend._indexer_kernels.index_partial(
+            kwargs["index_query"],
+            index_cache,
+            kwargs["index_weights"],
+            q_ends,
+            local.seq_lens,
+            local.page_table,
+            spec.index_topk,
+            local.init_counts,
+            local.local_counts,
+            sparse_mode=3,
+        ),
+        local,
+    )
 
 
 def ascend_prefill_index_metadata(

@@ -175,7 +175,13 @@ def decode_write_locations(
             the original device-scalar path.
     """
     _write_locations(
-        tables, page_sizes, seq_lens, out, bs, tokens_per_req, 0,
+        tables,
+        page_sizes,
+        seq_lens,
+        out,
+        bs,
+        tokens_per_req,
+        0,
         page_sizes_cpu=page_sizes_cpu,
     )
 
@@ -192,7 +198,13 @@ def window_write_locations(
 ) -> None:
     """:func:`decode_write_locations` of the windows ``start .. start + n - 1`` for ``window_starts[:bs]``."""
     _write_locations(
-        tables, page_sizes, window_starts, out, bs, tokens_per_req, tokens_per_req,
+        tables,
+        page_sizes,
+        window_starts,
+        out,
+        bs,
+        tokens_per_req,
+        tokens_per_req,
         page_sizes_cpu=page_sizes_cpu,
     )
 

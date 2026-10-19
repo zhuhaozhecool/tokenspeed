@@ -77,7 +77,8 @@ def test_dsa_metadata_changed_input_graph(rank, subpages, rows, cols):
             dtype=torch.int32,
         )
         cpu_lengths = torch.tensor(
-            [0, 125, 126, 127, 128, 129, 6144, cols * page] * (rows // 8), dtype=torch.int32
+            [0, 125, 126, 127, 128, 129, 6144, cols * page] * (rows // 8),
+            dtype=torch.int32,
         )
         if seed == 0:
             cpu_table.zero_()

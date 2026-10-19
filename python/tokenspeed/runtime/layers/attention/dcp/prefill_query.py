@@ -150,8 +150,10 @@ def history_owner_vectors(plan: PrefillHistoryPlan, *, rank: int):
     if not 0 <= rank < len(plan.owned_rows):
         raise ValueError("history rank is outside owner group")
     segments = np.asarray(
-        [(s.logical_start, s.rows, s.owner, s.local_start, s.virtual_start)
-         for s in plan.segments],
+        [
+            (s.logical_start, s.rows, s.owner, s.local_start, s.virtual_start)
+            for s in plan.segments
+        ],
         dtype=np.int64,
     ).reshape(-1, 5)
 

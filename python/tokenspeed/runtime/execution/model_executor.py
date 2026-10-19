@@ -179,9 +179,7 @@ def _with_prefill_sample_offsets(
     # torch_npu 2.9's out-of-place index_copy also writes its input. Keep
     # sampling positions in separate storage from the accepted frontier.
     offsets = cache_lengths.clone()
-    offsets.index_copy_(
-        0, pool_rows, (last - 1).clamp_min(0).to(cache_lengths.dtype)
-    )
+    offsets.index_copy_(0, pool_rows, (last - 1).clamp_min(0).to(cache_lengths.dtype))
     return replace(sampling_info, valid_cache_lengths=offsets)
 
 

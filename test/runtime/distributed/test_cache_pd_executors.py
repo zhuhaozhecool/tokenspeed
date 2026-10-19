@@ -24,6 +24,7 @@ from test.runtime.cache_pd_test_utils import group as make_group  # noqa: E402
 from test.runtime.cache_pd_test_utils import layout as make_layout
 from test.runtime.cache_pd_test_utils import operation as make_operation
 from test.runtime.cache_pd_test_utils import segment as make_segment
+
 from tokenspeed.runtime.pd.cache_protocol import (  # noqa: E402
     CacheContractError,
     CachePDBlockManifest,
@@ -420,8 +421,10 @@ def test_rejected_registration_fails_later_request_without_stopping_handler() ->
     aborts = []
     notifications = []
     manager.abort_room = lambda room, reason: aborts.append((room, reason))
-    manager.sync_status_to_decode_endpoint = lambda endpoint, port, room, status, rank: (
-        notifications.append((endpoint, port, room, status, rank))
+    manager.sync_status_to_decode_endpoint = (
+        lambda endpoint, port, room, status, rank: (
+            notifications.append((endpoint, port, room, status, rank))
+        )
     )
     manager.topology = _topology(tp_size=2, tp_rank=1, global_rank=1)
 
@@ -475,8 +478,10 @@ def test_failed_room_fanout_never_restores_state(
             manager.request_status.__setitem__(9, TransferPoll.Failed)
         )
     notifications = []
-    manager.sync_status_to_decode_endpoint = lambda endpoint, port, room, status, rank: (
-        notifications.append((endpoint, port, room, status, rank))
+    manager.sync_status_to_decode_endpoint = (
+        lambda endpoint, port, room, status, rank: (
+            notifications.append((endpoint, port, room, status, rank))
+        )
     )
 
     manager._handle_bootstrap_message(
@@ -490,6 +495,7 @@ def test_failed_room_fanout_never_restores_state(
 
 def test_cache_factory_exposes_only_typed_arena() -> None:
     import torch
+
     from tokenspeed.runtime.pd.factory import get_kv_args
 
     layout = _layout()
@@ -1153,6 +1159,7 @@ def test_flatten_packed_copy_emits_contiguous_dest_rows() -> None:
 
 def test_pack_scratch_device_uses_explicit_gpu_index() -> None:
     import torch
+
     from tokenspeed.runtime.pd.mooncake.pack import PrefillPackScratch, scratch_device
 
     assert scratch_device(3) == torch.device("cuda", 3)
@@ -1167,6 +1174,7 @@ def test_pack_scratch_keeps_old_buffer_when_growth_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import torch
+
     from tokenspeed.runtime.pd.mooncake.pack import PrefillPackScratch
 
     events: list[tuple] = []
@@ -1226,6 +1234,7 @@ def test_pack_scratch_keeps_old_buffer_when_register_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import torch
+
     from tokenspeed.runtime.pd.mooncake.pack import PrefillPackScratch
 
     events: list[tuple] = []
@@ -1270,6 +1279,7 @@ def test_materialize_falls_back_when_register_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import torch
+
     from tokenspeed.runtime.pd.mooncake.pack import PackedCopy, PrefillPackScratch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)

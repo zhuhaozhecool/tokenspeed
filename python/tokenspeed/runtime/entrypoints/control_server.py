@@ -370,11 +370,16 @@ async def generate(request: Request):
         data = None
     if isinstance(data, dict) and "data_parallel_rank" in data:
         from tokenspeed.runtime.entrypoints.token_completions import gateway_pin_headers
+
         headers = gateway_pin_headers(data, dp_targets=_configured_gateway_dp_targets())
         supplied = request.headers.get("x-smg-target-worker")
         if supplied is not None and supplied != headers["X-SMG-Target-Worker"]:
-            raise HTTPException(400, "SMG target header conflicts with data_parallel_rank")
-        resp = await _proxy_request(request, body_override=body, headers_override=headers)
+            raise HTTPException(
+                400, "SMG target header conflicts with data_parallel_rank"
+            )
+        resp = await _proxy_request(
+            request, body_override=body, headers_override=headers
+        )
     else:
         resp = await _proxy_request(request, body_override=body)
     if not (isinstance(resp, Response) and resp.body):
@@ -409,13 +414,21 @@ async def generate(request: Request):
 
 def _configured_gateway_dp_targets() -> dict[str, int]:
     try:
-        targets = json.loads(os.environ.get("TOKENSPEED_TOKEN_GATEWAY_DP_TARGETS", "{}"))
+        targets = json.loads(
+            os.environ.get("TOKENSPEED_TOKEN_GATEWAY_DP_TARGETS", "{}")
+        )
     except ValueError as exc:
-        raise HTTPException(503, "Invalid TOKENSPEED_TOKEN_GATEWAY_DP_TARGETS JSON") from exc
-    if not isinstance(targets, dict) or any(
-        not isinstance(k, str) or not k.isdecimal() or type(v) is not int or v < 0
-        for k, v in targets.items()
-    ) or len(set(targets.values())) != len(targets):
+        raise HTTPException(
+            503, "Invalid TOKENSPEED_TOKEN_GATEWAY_DP_TARGETS JSON"
+        ) from exc
+    if (
+        not isinstance(targets, dict)
+        or any(
+            not isinstance(k, str) or not k.isdecimal() or type(v) is not int or v < 0
+            for k, v in targets.items()
+        )
+        or len(set(targets.values())) != len(targets)
+    ):
         raise HTTPException(503, "Invalid TOKENSPEED_TOKEN_GATEWAY_DP_TARGETS")
     return targets
 
@@ -425,14 +438,21 @@ async def completions(request: Request):
     body = await request.json()
     if isinstance(body.get("prompt"), list):
         from tokenspeed.runtime.entrypoints.token_completions import (
-            gateway_token_completions, token_completions,
+            gateway_token_completions,
+            token_completions,
         )
+
         if os.environ.get("TOKENSPEED_STANDALONE_DECODE_BENCHMARK") == "reuse-cache":
-            return await token_completions(body, _stub(), served_model=await _served_model())
+            return await token_completions(
+                body, _stub(), served_model=await _served_model()
+            )
         targets = _configured_gateway_dp_targets()
         return await gateway_token_completions(
-            body, gateway_url=_gateway_url, served_model=await _served_model(),
-            dp_targets=targets, timeout=_PROXY_TIMEOUT,
+            body,
+            gateway_url=_gateway_url,
+            served_model=await _served_model(),
+            dp_targets=targets,
+            timeout=_PROXY_TIMEOUT,
         )
     return await _proxy_request(request)
 

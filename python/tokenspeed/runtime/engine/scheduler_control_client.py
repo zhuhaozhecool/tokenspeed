@@ -102,7 +102,9 @@ def combined_flush_cache_output(
     ranks = [domain.dp_rank for domain in domains]
     complete = sorted(ranks) == list(range(len(results)))
     return FlushCacheReqOutput(
-        success=bool(results) and complete and all(result.success for result in results),
+        success=bool(results)
+        and complete
+        and all(result.success for result in results),
         domains=sorted(domains, key=lambda domain: domain.dp_rank),
     )
 
