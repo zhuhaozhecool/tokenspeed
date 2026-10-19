@@ -72,6 +72,13 @@ can never see a silently-defaulted one. This is deliberate — a `= False`
 default once hid `extend_with_prefix` being swallowed by a composite's
 `**kwargs`, and FlashMLA planned a ragged prefill for a prefix-cached batch.
 
+### Ascend DSA metadata lifecycle
+
+Decode refreshes KVP tables, owner slots and TopK windows before replay.
+The optional native metadata path preserves dynamic per-step inputs. Short,
+full-scan and unsupported geometries retain the explicit adapter fallbacks.
+Prefill delegates to the bounded-query adapter introduced separately.
+
 ### Buffer sizing: the ladder is a performance subset, never a capacity limit
 
 `ForwardStepRunner` distinguishes `max_capture_bs` (top of the capture ladder,
@@ -1996,10 +2003,3 @@ released, and the client receives a `CapacityAbort` finish. The fixed hot
 partition is reused only after the new owner's PD initialization invalidates
 its metadata. No snapshot store, restore, recovery prefill or extend staging
 is used by offloaded arenas.
-
-### Ascend DSA metadata lifecycle
-
-Decode refreshes KVP tables, owner slots and TopK windows before replay.
-The optional native metadata path preserves dynamic per-step inputs. Short,
-full-scan and unsupported geometries retain the explicit adapter fallbacks.
-Prefill delegates to the bounded-query adapter introduced separately.
