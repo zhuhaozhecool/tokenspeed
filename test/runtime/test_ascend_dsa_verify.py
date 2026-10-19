@@ -518,9 +518,10 @@ def test_dcp_verify_batches_query_rows_with_causal_lengths(width):
             return q
 
         def _run_indexed_sparse_attention(
-            self, selection, layer, pool, *, head_major_output
+            self, selection, layer, pool, *, head_major_output, is_prefill
         ):
             del layer, pool, head_major_output
+            assert is_prefill is False
             return selection.flatten(1)
 
     backend = FakeBackend()
@@ -716,9 +717,10 @@ def test_single_token_mixed_decode_selects_request_shaped_query_metadata():
             return q
 
         def _run_indexed_sparse_attention(
-            self, selection, layer, pool, *, head_major_output
+            self, selection, layer, pool, *, head_major_output, is_prefill
         ):
             del layer, pool, head_major_output
+            assert is_prefill is False
             return selection.flatten(1)
 
     backend = FakeBackend()

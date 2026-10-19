@@ -682,6 +682,10 @@ class AscendDSABackend(DSABackend):
             True,
         )
 
+    def _attention_kernels(self, *, is_prefill: bool):
+        """Let model plugins select kernels while sharing the KVP data flow."""
+        return self._indexer_kernels
+
     def _run_indexed_sparse_attention(
         self,
         selection,
@@ -689,6 +693,7 @@ class AscendDSABackend(DSABackend):
         token_to_kv_pool,
         *,
         head_major_output,
+        is_prefill: bool,
     ):
         spec = self._indexer_spec
         kv_cache = token_to_kv_pool.get_key_buffer(layer.layer_id).view(
@@ -703,7 +708,7 @@ class AscendDSABackend(DSABackend):
                 f"Ascend DSA query width must be {expected_width}, got "
                 f"{selection.query.shape[-1]}"
             )
-        kernels = self._indexer_kernels
+        kernels = self._attention_kernels(is_prefill=is_prefill)
         if not selection.context_parallel:
             # TND accepts 32/64 query heads. TP can leave fewer Q heads on
             # each rank; repeat those heads locally and keep only the first
@@ -880,6 +885,7 @@ class AscendDSABackend(DSABackend):
             layer,
             token_to_kv_pool,
             head_major_output=head_major_output,
+            is_prefill=True,
         )
 
     def forward_extend_chunked(self, *args, **kwargs):
@@ -962,6 +968,7 @@ class AscendDSABackend(DSABackend):
             layer,
             token_to_kv_pool,
             head_major_output=head_major_output,
+            is_prefill=False,
         )
 
 
