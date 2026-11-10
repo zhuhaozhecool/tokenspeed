@@ -36,14 +36,6 @@ seq_lens, *, forward_mode, block_tables, num_extends, for_graph_replay,
 * **eager decode** = refresh (`for_graph_replay=False`) + the same forward
   Python the graph recorded.
 
-Models with communication metadata that Python normally prepares in forward
-may expose `refresh_decode_communication(padded_tokens, live_tokens,
-for_graph_replay)` as a keyword-only hook. The executor binds it to the step
-runner, which invokes it before attention metadata refresh. Communication row
-ownership stays with the model; attention backends do not retain MoE owners.
-Replay can refresh live counts at captured shard offsets while eager execution
-continues computing them from the current forward context.
-
 `init_forward_metadata` serves extend/mixed (and idle warmup) ONLY; a pure
 DECODE call raises. There is deliberately no fresh-allocation decode arm
 anywhere. `init_forward_metadata_replay_cuda_graph` no longer exists.

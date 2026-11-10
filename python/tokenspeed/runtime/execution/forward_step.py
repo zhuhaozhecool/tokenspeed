@@ -321,7 +321,6 @@ class ForwardStepRunner:
         sampling_backend: SamplingBackend | None = None,
         runtime_states: RuntimeStates | None = None,
         decode_graph_supported: bool = True,
-        refresh_decode_communication: Callable | None = None,
     ):
         self.config = config
         self.attn_backend = attn_backend
@@ -334,7 +333,6 @@ class ForwardStepRunner:
         self.capturable_grammar = capturable_grammar
         self.eager_grammar_buffers = eager_grammar_buffers
         self.runtime_states = runtime_states
-        self.refresh_decode_communication = refresh_decode_communication
         self.disable_padding = config.disable_cuda_graph_padding
         self.enable_cudagraph_gc = config.enable_cudagraph_gc
         self.device = config.device
@@ -991,12 +989,6 @@ class ForwardStepRunner:
         # Pure decode: ctx.input_num_tokens == bs * max_tokens_per_req
         # (backends that key off their own buffers ignore it).
         cache_kwargs["num_tokens"] = padded_bs * self.max_tokens_per_req
-        if self.refresh_decode_communication is not None:
-            self.refresh_decode_communication(
-                padded_tokens=padded_bs * self.max_tokens_per_req,
-                live_tokens=actual_bs * self.max_tokens_per_req,
-                for_graph_replay=use_graph,
-            )
         self.attn_backend.refresh_decode_metadata(
             padded_bs,
             actual_bs,

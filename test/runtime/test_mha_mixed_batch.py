@@ -397,7 +397,6 @@ def _block_runtime():
     drafter.round_block_tables = None
     drafter.embed_tokens = _stop_before_weights
     runner = ForwardStepRunner.__new__(ForwardStepRunner)
-    runner.refresh_decode_communication = None
     runner.attn_backend, runner.draft_attn_backend = routers
     runner.drafter = drafter
     runner.max_tokens_per_req = 16

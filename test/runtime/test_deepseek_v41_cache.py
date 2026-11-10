@@ -321,18 +321,8 @@ def test_packed_refresh_positions_padding_and_token_count(
     assert all(tensor.shape == (3 * verify_width,) for tensor in meta.compressor)
     pointers = [tensor.data_ptr() for tensor in tensors]
     runner = SimpleNamespace(
-        attn_backend=backend,
-        draft_attn_backend=None,
-        max_tokens_per_req=verify_width,
-        refresh_decode_communication=None,
+        attn_backend=backend, draft_attn_backend=None, max_tokens_per_req=verify_width
     )
-    live_rows = torch.zeros(3 * verify_width, dtype=torch.bool)
-
-    def refresh_communication(*, padded_tokens, live_tokens, for_graph_replay):
-        assert padded_tokens == live_rows.numel()
-        live_rows.copy_(torch.arange(padded_tokens) < live_tokens)
-
-    runner.refresh_decode_communication = refresh_communication
     for actual in (2, 1, 0, 2):
         ForwardStepRunner._prepare_decode_metadata(
             runner,
@@ -345,7 +335,6 @@ def test_packed_refresh_positions_padding_and_token_count(
             settle=lambda: None,
             block_tables=tables,
         )
-        assert live_rows.sum().item() == actual * verify_width
         assert backend.query_metadata(ForwardMode.DECODE) is meta
         assert [tensor.data_ptr() for tensor in tensors] == pointers
         expected = list(range(129, 129 + verify_width)) + list(
@@ -1496,10 +1485,7 @@ def test_target_runner_refresh_omits_num_extends_after_mixed_metadata():
     assert backend.query_metadata(ForwardMode.DECODE).positions.tolist() == [-1, 3]
     # Exercise the real runner call site without constructing a model or graphs.
     runner = SimpleNamespace(
-        attn_backend=backend,
-        draft_attn_backend=None,
-        max_tokens_per_req=1,
-        refresh_decode_communication=None,
+        attn_backend=backend, draft_attn_backend=None, max_tokens_per_req=1
     )
     for actual_bs in (2, 1, 0):
         ForwardStepRunner._prepare_decode_metadata(
