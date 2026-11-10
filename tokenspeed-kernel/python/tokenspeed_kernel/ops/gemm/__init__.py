@@ -77,7 +77,6 @@ from tokenspeed_kernel.thirdparty.cute_dsl.skinny_gemm import (
     SkinnyGemmConfig,
     shape_dynamic_skinny_gemm,
 )
-from tokenspeed_kernel.weights import get_weight_broker
 from tokenspeed_kernel.workspace import zeroed_state
 
 logger = logging.getLogger(__name__)
@@ -87,7 +86,6 @@ __all__ = [
     "bmm",
     "mm",
     "plan_dense_gemm",
-    "prepare_dense_gemm_weight",
     # NVFP4 x BF16 weight preparation
     "has_flashinfer_cute_dsl_nvfp4_a16",
     "prepare_nvfp4_a16_weights",
@@ -327,9 +325,7 @@ def _gemm_format_signature(
             b=tensor_format("mxfp4", B.dtype, scale=b_scale),
         )
     return format_signature(
-        a=dense_tensor_format(A.dtype),
-        b=dense_tensor_format(B.dtype),
-        layouts={get_weight_broker().layout(B, allow_unknown=True)},
+        a=dense_tensor_format(A.dtype), b=dense_tensor_format(B.dtype)
     )
 
 
@@ -537,48 +533,6 @@ def plan_dense_gemm(
         declared_traits=frozenset(),
         ignore_layout=False,
     )
-
-
-def prepare_dense_gemm_weight(owner, *, batch_invariant: bool) -> None:
-    """Prepare an owner's canonical ``weight[N,K]`` for compatible MM kernels.
-
-    Select preprocessing using static weight geometry and an unrestricted row
-    count. Execution remains with ``mm``, which selects against the installed
-    storage layout. Providers preserve the logical shape for checkpoint loaders
-    and supply a compatible implementation for every row count. Repeated calls
-    leave prepared storage and captured addresses unchanged.
-    """
-    broker = get_weight_broker()
-    weight = owner.weight
-    if broker.layout(weight, allow_unknown=True) is not None:
-        return
-    n, k = weight.shape
-    features = {"weight_preparation"}
-    if batch_invariant:
-        features.add("batch_invariant")
-    try:
-        plan = KernelPlan.select(
-            "gemm",
-            "mm",
-            format_signature(
-                a=dense_tensor_format(weight.dtype),
-                b=dense_tensor_format(weight.dtype),
-            ),
-            features=frozenset(features),
-            static_traits={
-                "n": n,
-                "k": k,
-                "weight_shape": (n, k),
-                "out_dtype": weight.dtype,
-            },
-            variable_traits=frozenset({"m", "a_contiguous"}),
-            declared_traits=frozenset({"weight_shape"}),
-            solution=None,
-            ignore_layout=True,
-        )
-    except NoKernelFoundError:
-        return
-    broker.preprocess(plan.spec.weight_preprocessor, owner)
 
 
 def mm(
@@ -820,7 +774,6 @@ def mm(
         "m": M,
         "n": N,
         "k": K,
-        "weight_shape": (N, K),
         "b_layout": b_layout,
         "a_contiguous": online_contiguous_a or A.is_contiguous(),
         "a_inner_stride_one": online_contiguous_a or A.stride(-1) == 1,
