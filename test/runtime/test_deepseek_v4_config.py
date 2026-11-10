@@ -796,6 +796,7 @@ class TestDeepseekV4Config:
                 captured["kwargs"] = kwargs
 
         wrapper = object.__new__(ForwardStepRunner)
+        wrapper.refresh_decode_communication = None
         wrapper.attn_backend = FakeBackend()
         wrapper.draft_attn_backend = None
         wrapper.max_tokens_per_req = 1
@@ -833,6 +834,7 @@ class TestDeepseekV4Config:
                 captured[self.key]["kwargs"] = kwargs
 
         wrapper = object.__new__(ForwardStepRunner)
+        wrapper.refresh_decode_communication = None
         wrapper.attn_backend = FakeBackend("target")
         wrapper.draft_attn_backend = FakeBackend("draft")
         wrapper.drafter = SimpleNamespace(
@@ -882,6 +884,7 @@ class TestDeepseekV4Config:
                 captured[self.key].append(("refresh", args, kwargs))
 
         wrapper = object.__new__(ForwardStepRunner)
+        wrapper.refresh_decode_communication = None
         wrapper.attn_backend = FakeBackend("target")
         wrapper.draft_attn_backend = FakeBackend("draft")
         wrapper.max_tokens_per_req = 4
@@ -938,6 +941,7 @@ class TestDeepseekV4Config:
         state_table = torch.full((1, 1), 2, dtype=torch.int32)
 
         wrapper = object.__new__(ForwardStepRunner)
+        wrapper.refresh_decode_communication = None
         wrapper.attn_backend = FakeBackend("target")
         wrapper.draft_attn_backend = FakeBackend("draft")
         wrapper.max_tokens_per_req = 4
@@ -984,6 +988,7 @@ class TestDeepseekV4Config:
                 captured[self.key].append((args, kwargs))
 
         wrapper = object.__new__(ForwardStepRunner)
+        wrapper.refresh_decode_communication = None
         wrapper.attn_backend = FakeBackend("target")
         wrapper.draft_attn_backend = FakeBackend("draft")
         wrapper.max_tokens_per_req = 4

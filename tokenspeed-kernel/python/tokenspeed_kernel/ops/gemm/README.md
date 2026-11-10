@@ -1,5 +1,19 @@
 # GEMM weight preparation
 
+`prepare_dense_gemm_weight(owner, batch_invariant=...)` optionally prepares a
+canonical `owner.weight[N,K]` using an MM candidate's `weight_preprocessor`.
+Selection ignores the initial storage layout and uses static N/K geometry with
+unrestricted M and activation contiguity. A preprocessing candidate must expose
+`weight_preparation`, declare its accepted `weight_shape=(N,K)` pairs, preserve
+the logical checkpoint shape, and serve that layout across the whole row domain.
+Unsupported geometry or numerical requirements retain canonical storage.
+
+The weight broker records the installed layout. Dense `mm` includes that layout
+in selection, preventing canonical kernels from reading prepared storage. The
+preparation choice does not pin the execution kernel: compatible small-row and
+large-row implementations can share the layout. Repeated preparation leaves
+storage unchanged; checkpoint writes must preserve its layout and address.
+
 The optional `trtllm_kernel` extension is required for TRT-LLM's fused-A
 projection and cuBLASLt NVFP4 GEMM provider. Without it, the NVFP4 leaf is not
 registered and a direct fused-A call reports the missing package; importing
