@@ -34,6 +34,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import torch
+from tokenspeed_kernel._triton import triton
 from tokenspeed_kernel.ops.communication.mailbox import MailboxTarget
 from tokenspeed_kernel.ops.gemm import mm
 from tokenspeed_kernel.ops.gemm.cute_dsl import (
@@ -571,9 +572,16 @@ def block_scaled_router_mm(
     return mm(x, weight, out_dtype=torch.float32)
 
 
-# These GPU kernels require Triton features unavailable in Ascend Triton.
-if not current_platform().is_npu:
+try:
     import tokenspeed_kernel.ops.moe._triton.block_scaled  # noqa: E402,F401
+except AttributeError as exc:
+    if (
+        not current_platform().is_npu
+        or exc.name != "constexpr_function"
+        or exc.obj is not triton
+    ):
+        raise
+    # NPU inference does not use these GPU kernels or require a Triton upgrade.
 
 if current_platform().is_nvidia:
     import tokenspeed_kernel.ops.moe._flashinfer.block_scaled  # noqa: E402,F401

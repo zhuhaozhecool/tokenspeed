@@ -20,8 +20,13 @@
 
 """Unsupported block-scaled routes must fail before NPU execution."""
 
+import subprocess
+import sys
+import textwrap
+
 import pytest
 import torch
+from tokenspeed_kernel._triton import triton
 from tokenspeed_kernel.ops.moe.block_scaled import block_scaled_moe_routes_plan
 from tokenspeed_kernel.platform import current_platform
 
@@ -38,3 +43,37 @@ def test_npu_routes_plan_rejects_unsupported_execution(solution):
             device=torch.device("npu"),
             solution=solution,
         )
+
+
+@pytest.mark.skipif(
+    hasattr(triton, "constexpr_function"),
+    reason="requires Triton without constexpr_function",
+)
+@pytest.mark.parametrize("vendor", ["nvidia", "amd"])
+def test_missing_triton_api_is_not_ignored_on_gpu(vendor):
+    probe = textwrap.dedent("""
+        import sys
+        from dataclasses import replace
+
+        from tokenspeed_kernel._triton import triton
+        from tokenspeed_kernel.ops.gemm import cute_dsl, triton_skinny
+        import tokenspeed_kernel.ops.moe
+        from tokenspeed_kernel.platform import Platform, current_platform
+
+        # Only the hardware identity is simulated. The missing API comes from
+        # the installed Ascend Triton, with all shared dependencies preloaded.
+        Platform.override(replace(current_platform(), vendor=sys.argv[1]))
+        try:
+            import tokenspeed_kernel.ops.moe.block_scaled
+        except AttributeError as exc:
+            assert exc.name == "constexpr_function" and exc.obj is triton
+        else:
+            raise AssertionError("GPU model discovery must report the missing API")
+        """)
+    subprocess.run(
+        [sys.executable, "-c", probe, vendor],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )

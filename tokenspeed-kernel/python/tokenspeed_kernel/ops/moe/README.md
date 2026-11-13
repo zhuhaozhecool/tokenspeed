@@ -81,10 +81,12 @@ cross-vendor bitwise GEMM equivalence. Different FP32 reduction
 associations remain observable near cancellation and must be checked against
 native operator and model references before qualification.
 
-On Ascend, the public module remains importable so model discovery can run,
-but GPU block-scaled implementations are not imported. Planning block-scaled
-MoE routes on NPU raises `NotImplementedError`, including for an explicit
-`torch` solution; the CPU oracle is not an NPU fallback.
+On Ascend, importing the GPU block-scaled implementations is optional when
+Triton lacks `constexpr_function`: NPU inference does not use these kernels
+and can continue without upgrading Triton. Other import errors still propagate,
+as does the missing API on GPU platforms. Planning block-scaled MoE routes on
+NPU raises `NotImplementedError`, including for an explicit `torch` solution;
+the CPU oracle is not an NPU fallback.
 
 Expert selection scores `sigmoid(logit) + bias` with `torch.sigmoid`'s
 `expf` and correctly rounded divide, so near-tied experts rank as in the
