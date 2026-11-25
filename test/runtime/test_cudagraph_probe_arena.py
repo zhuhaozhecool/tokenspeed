@@ -31,6 +31,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from torch.multiprocessing.reductions import StorageWeakRef
 
 # Both entry points need the test dir (siblings) and the root (test.runtime.*).
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -40,7 +41,11 @@ from ci_system.ci_register import register_cuda_ci  # noqa: E402
 register_cuda_ci(est_time=10, suite="runtime-1gpu")
 
 from tokenspeed.runtime.distributed.mapping import Mapping  # noqa: E402
-from tokenspeed.runtime.execution import device, prefill_graph  # noqa: E402
+from tokenspeed.runtime.execution import (  # noqa: E402
+    cudagraph_memory,
+    device,
+    prefill_graph,
+)
 from tokenspeed.runtime.execution.cudagraph_memory import (  # noqa: E402
     probe_arena_parent_blocks,
 )
@@ -371,18 +376,23 @@ class _ServingCapture(Exception):
 
 
 def _startup_charge(monkeypatch, *, init_keeps, tune_keeps, enforce_eager, is_nvidia):
-    """Boot with fakes; returns (startup bytes each rebind got, devices read, stack kept)."""
+    """Boot with fake hardware and exercise the real probe storage lifetime."""
     from tokenspeed.runtime.execution import factory
 
     free, reads, charged, stack = [1 << 40], [], [], [0]
+    probe_storage = None
 
     class Executor:
         attn_backend = draft_attn_backend = None
         # Read by Kimi-K3.1's aggregated plan agreement, faked out below.
         prefill_graph = None
 
-        def __init__(self):
+        def __init__(self, token_to_kv_pool):
+            self.token_to_kv_pool = token_to_kv_pool
             free[0] -= init_keeps
+
+        def release_graphs(self):
+            pass
 
         def autotune(self, *, keep_loaded_tactics):
             # Only the probe boot tunes; the final pools are warmed by warm_kernels.
@@ -392,8 +402,7 @@ def _startup_charge(monkeypatch, *, init_keeps, tune_keeps, enforce_eager, is_nv
             stack[0] += 1 << 30
 
         def warm_kernels(self):
-            # After the rebind: its transient memory comes from the utilization
-            # headroom, not the reserve the rebind was charged for.
+            # The serving executor warms without changing the measured reserve.
             assert charged
             free[0] -= 1 << 20
 
@@ -401,20 +410,35 @@ def _startup_charge(monkeypatch, *, init_keeps, tune_keeps, enforce_eager, is_nv
             raise _ServingCapture
 
     def build(*args, **kwargs):
-        # The probe build and the rebind take memory too: neither is startup's.
+        nonlocal probe_storage
         free[0] -= 192 << 20
-        return built
+        region = torch.empty(128)
+        if kwargs["probe_batch_rows"] is not None:
+            assert kwargs["profiled_cache_bytes"] is None
+            probe_storage = StorageWeakRef(region.untyped_storage())
+        elif probe_storage is not None:
+            assert probe_storage.expired()
+            assert kwargs["profiled_cache_bytes"] == 7
+            assert kwargs["graph_reserve_bytes"] == 11
+        pool = SimpleNamespace(
+            arena=SimpleNamespace(runtime_contract=None, regions={"arena": region})
+        )
+        return SimpleNamespace(
+            attn_backend=None,
+            draft_attn_backend=None,
+            token_to_kv_pool=pool,
+            draft_token_to_kv_pool=None,
+            profiled_cache_bytes=7,
+        )
 
-    def rebind(executor, build, args, gpu, probe, backends, *, startup_resident_bytes):
+    def measure(executor, args, gpu, *, startup_resident_bytes):
         charged.append(startup_resident_bytes)
-        free[0] -= 1 << 30
-        return probe, views(probe)
+        assert probe_storage is not None and not probe_storage.expired()
+        return 11
 
     def views(attention):
         return SimpleNamespace(
-            token_to_kv_pool=SimpleNamespace(
-                arena=SimpleNamespace(runtime_contract=None)
-            ),
+            token_to_kv_pool=attention.token_to_kv_pool,
             draft_token_to_kv_pool=None,
             cache_geometry=SimpleNamespace(prefix_granularity=1),
             cache_groups=[],
@@ -425,12 +449,6 @@ def _startup_charge(monkeypatch, *, init_keeps, tune_keeps, enforce_eager, is_nv
         prepare_multimodal_runtime=lambda: None,
         prepare_communication_runtime=lambda _tokens: None,
     )
-    built = SimpleNamespace(
-        attn_backend=None,
-        draft_attn_backend=None,
-        token_to_kv_pool=None,
-        draft_token_to_kv_pool=None,
-    )
 
     @contextlib.contextmanager
     def restore_stack_limit():
@@ -440,7 +458,7 @@ def _startup_charge(monkeypatch, *, init_keeps, tune_keeps, enforce_eager, is_nv
         stack[0] = found
 
     driver = SimpleNamespace(
-        synchronize=lambda gpu: reads.append(gpu),
+        synchronize=lambda gpu: None,
         empty_cache=lambda: None,
         memory_reserved=lambda: 0,
         memory_allocated=lambda: 0,
@@ -458,14 +476,18 @@ def _startup_charge(monkeypatch, *, init_keeps, tune_keeps, enforce_eager, is_nv
         ),
     )
     monkeypatch.setattr(factory, "create_model_runner", lambda *a: (target, None))
-    monkeypatch.setattr(factory, "create_model_executor", lambda **_: Executor())
+    monkeypatch.setattr(
+        factory,
+        "create_model_executor",
+        lambda **kwargs: Executor(kwargs["token_to_kv_pool"]),
+    )
     monkeypatch.setattr(
         factory, "ModelExecutorConfig", SimpleNamespace(from_server_args=lambda **_: 0)
     )
     monkeypatch.setattr(registry, "create_attn_components", build)
     monkeypatch.setattr(device, "probe_arena_floor", lambda *_, **__: 1)
     monkeypatch.setattr(device, "pool_views", views)
-    monkeypatch.setattr(device, "_rebind_under_reserve", rebind)
+    monkeypatch.setattr(cudagraph_memory, "probe_cudagraph_memory", measure)
     # Kimi-K3.1's aggregated prefill graph plan agreement takes no memory.
     monkeypatch.setattr(
         prefill_graph, "check_rank_uniform_prefill_plan", lambda *_: None
@@ -485,6 +507,7 @@ def _startup_charge(monkeypatch, *, init_keeps, tune_keeps, enforce_eager, is_nv
         drafter_attention_backend=None,
         disable_cudagraph_memory_reserve=False,
         enforce_eager=enforce_eager,
+        speculative_algorithm=None,
         enable_prefix_caching=False,
         enable_memory_saver=False,
         enable_kvstore=False,
@@ -519,7 +542,7 @@ def _startup_charge(monkeypatch, *, init_keeps, tune_keeps, enforce_eager, is_nv
 @pytest.mark.parametrize(
     "init_keeps, tune_keeps", [(256 << 20, 384 << 20), (256 << 20, -512 << 20)]
 )
-def test_the_rebind_is_charged_what_executor_init_and_tuning_kept(
+def test_the_reserve_includes_what_executor_init_and_tuning_kept(
     monkeypatch, init_keeps, tune_keeps
 ) -> None:
     charged, devices, stack = _startup_charge(
@@ -558,46 +581,8 @@ def test_a_probe_off_nvidia_leaves_the_startup_residue_to_the_headroom(
     assert charged == [0] and devices == set()
 
 
-def test_the_boot_probes_rebuilds_and_captures_in_order() -> None:
+def test_the_boot_threads_the_probe_floor_and_profile() -> None:
     build = _function("execution/device.py", "build_device_side")
-    steps = {
-        "_cudagraph_probe_refusal",
-        "build_components",
-        "autotune",
-        "warm_kernels",
-        "_rebind_under_reserve",
-        "HostCacheExecutor",
-        "_capture_serving_graphs",
-    }
-    calls = sorted(
-        (n for n in ast.walk(build) if isinstance(n, ast.Call) and _callee(n) in steps),
-        key=lambda n: (n.lineno, n.col_offset),
-    )
-    # The Host cache executor registers the layerwise load trackers the
-    # prefill graphs' capture notes their segments' waits on.
-    assert [_callee(n) for n in calls] == [
-        "_cudagraph_probe_refusal",
-        "build_components",
-        "autotune",
-        "_rebind_under_reserve",
-        "warm_kernels",
-        "HostCacheExecutor",
-        "_capture_serving_graphs",
-    ]
-    refusal, probe_build, _, _, _, _, _ = calls
-    # The serving capture, which a forward reload repeats, then reseeds the generator.
-    capture = _function("execution/device.py", "_capture_serving_graphs")
-    serving, seed = sorted(
-        (
-            n
-            for n in ast.walk(capture)
-            if isinstance(n, ast.Call)
-            and _callee(n) in {"capture_graphs", "set_random_seed"}
-        ),
-        key=lambda n: (n.lineno, n.col_offset),
-    )
-    assert [_callee(serving), _callee(seed)] == ["capture_graphs", "set_random_seed"]
-    assert [ast.unparse(arg) for arg in refusal.args] == ["server_args"]
     # The target's model: the narrowing floor must not read the draft's.
     (narrowing,) = (
         n
@@ -605,13 +590,17 @@ def test_the_boot_probes_rebuilds_and_captures_in_order() -> None:
         if isinstance(n, ast.Call) and _callee(n) == "narrowing_prefill_model"
     )
     assert ast.unparse(narrowing.args[0]) == "target.model"
-    rows = next(kw.value for kw in probe_build.keywords if kw.arg == "probe_batch_rows")
-    assert isinstance(rows, ast.IfExp) and ast.unparse(rows.orelse) == "None"
-    assert _callee(rows.body) == "probe_arena_floor"
-    first = next(
-        kw.value for kw in probe_build.keywords if kw.arg == "profiled_cache_bytes"
-    )
+    measure = _function("execution/device.py", "measure_probe")
+    rows = _keyword(measure, "build_components", "probe_batch_rows")
+    assert _callee(rows) == "probe_arena_floor"
+    first = _keyword(measure, "build_components", "profiled_cache_bytes")
     assert ast.unparse(first) == "None"
+    capture = _function("execution/device.py", "_capture_serving_graphs")
+    (serving,) = (
+        n
+        for n in ast.walk(capture)
+        if isinstance(n, ast.Call) and _callee(n) == "capture_graphs"
+    )
     # The serving capture takes the whole ladder.
     entries = next(kw.value for kw in serving.keywords if kw.arg == "entries")
     assert ast.unparse(entries) == "None"
@@ -636,8 +625,6 @@ def test_the_boot_probes_rebuilds_and_captures_in_order() -> None:
     for keyword in (
         "graph_reserve_bytes",
         "profiled_cache_bytes",
-        "reuse_target_backend",
-        "reuse_draft_backend",
     ):
         value = _keyword(forwarder, "create_attn_components", keyword)
         assert ast.unparse(value) == keyword

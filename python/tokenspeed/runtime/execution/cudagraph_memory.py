@@ -22,19 +22,20 @@
 
 from __future__ import annotations
 
+import gc
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
+from torch.multiprocessing.reductions import StorageWeakRef
 
 from tokenspeed.runtime.execution.memory_delta import DriverMemoryDeltaObserver
 from tokenspeed.runtime.utils import get_colorful_logger
 
 if TYPE_CHECKING:
     from tokenspeed.runtime.execution.model_executor import ModelExecutor
-    from tokenspeed.runtime.layers.attention.registry import AttentionBuild
     from tokenspeed.runtime.utils.server_args import ServerArgs
 
 logger = get_colorful_logger(__name__)
@@ -269,40 +270,58 @@ def _hungriest_rank(server_args: ServerArgs, total: int) -> int:
     return int(reduced.item())
 
 
-def reserve_and_rebind(
-    executor: ModelExecutor,
-    build_components: Callable[..., AttentionBuild],
-    server_args: ServerArgs,
-    gpu_id: int,
-    *,
-    profiled_cache_bytes: int,
-    startup_resident_bytes: int,
-) -> AttentionBuild:
-    """Measure a capture on the probe pool, then rebuild the real one under it.
+class GraphMemoryProbe:
+    """Own the throwaway executor until its graphs and KV pool can be dropped."""
 
-    Release the probe's graph and KV storage before allocating the serving
-    arena from the original profile less the reserve. Reuse the measured
-    backends and publish their new pool geometry to the executor.
-    """
-    graph_reserve_bytes = probe_cudagraph_memory(
-        executor, server_args, gpu_id, startup_resident_bytes=startup_resident_bytes
-    )
-    device = torch.get_device_module(server_args.device)
-    device.synchronize(gpu_id)
-    executor.release_graphs()
-    executor.token_to_kv_pool.arena.release_probe_storage()
-    device.empty_cache()
-    attention = build_components(
-        graph_reserve_bytes=graph_reserve_bytes,
-        probe_batch_rows=None,
-        profiled_cache_bytes=profiled_cache_bytes,
-        reuse_target_backend=executor.attn_backend,
-        reuse_draft_backend=executor.draft_attn_backend,
-    )
-    executor.set_cache_pool(
-        attention.token_to_kv_pool, attention.draft_token_to_kv_pool
-    )
-    return attention
+    def __init__(
+        self, executor: ModelExecutor, server_args: ServerArgs, gpu_id: int
+    ) -> None:
+        self._executor: ModelExecutor | None = executor
+        self._server_args = server_args
+        self._gpu_id = gpu_id
+        # Track the underlying storage, including aliases created via Tensor.view.
+        self._storages = tuple(
+            StorageWeakRef(region.untyped_storage())
+            for region in executor.token_to_kv_pool.arena.regions.values()
+        )
+
+    def measure(self, *, startup_resident_bytes: int) -> int:
+        executor = self._executor
+        if executor is None:
+            raise RuntimeError("graph memory probe is closed")
+        return probe_cudagraph_memory(
+            executor,
+            self._server_args,
+            self._gpu_id,
+            startup_resident_bytes=startup_resident_bytes,
+        )
+
+    def close(self) -> None:
+        """Drain the device and drop the probe's own references."""
+        executor = self._executor
+        if executor is None:
+            return
+        self._executor = None
+        device = torch.get_device_module(self._server_args.device)
+        device.synchronize(self._gpu_id)
+        executor.release_graphs()
+        if self._server_args.speculative_algorithm == "DFLASH":
+            from tokenspeed.runtime.execution.drafter._dflash_fused_kv import (
+                forget_kv_buffer_ptrs,
+            )
+
+            forget_kv_buffer_ptrs()
+        del executor
+        gc.collect()
+        device.empty_cache()
+
+    def require_storage_released(self) -> None:
+        """Reject a serving allocation if a probe storage is still owned."""
+        retained = sum(not storage.expired() for storage in self._storages)
+        if _hungriest_rank(self._server_args, retained):
+            raise RuntimeError(
+                "graph memory probe still has a live KV storage on at least one rank"
+            )
 
 
 def probe_cudagraph_memory(

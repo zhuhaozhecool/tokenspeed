@@ -139,7 +139,7 @@ import enum
 import json
 import os
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -196,7 +196,6 @@ if TYPE_CHECKING:
     from tokenspeed.runtime.execution.forward_reload import ForwardReloader
     from tokenspeed.runtime.execution.model_executor import ModelExecutor
     from tokenspeed.runtime.execution.model_runner import ModelRunner
-    from tokenspeed.runtime.layers.attention.backends.base import AttentionBackend
     from tokenspeed.runtime.layers.attention.kv_cache.base import CachePool
     from tokenspeed.runtime.layers.attention.registry import AttentionBuild
     from tokenspeed.runtime.utils.server_args import ServerArgs
@@ -1528,39 +1527,6 @@ def pool_views(attention: AttentionBuild) -> PoolViews:
     )
 
 
-def _rebind_under_reserve(
-    executor: ModelExecutor,
-    build_components: Callable[..., AttentionBuild],
-    server_args: ServerArgs,
-    gpu_id: int,
-    probe: AttentionBuild,
-    requested_backends: tuple[str | None, str | None],
-    *,
-    startup_resident_bytes: int,
-) -> tuple[AttentionBuild, PoolViews]:
-    """Rebuild the real pool under the probe's reserve, and its views with it.
-
-    Returned together so no caller can pair the rebuilt pool with views still
-    derived from the probe arena. The probe build wrote its backend resolution
-    into ``server_args``; the rebuild resolves again from the operator's
-    ``requested_backends``, so both builds pick the same backend and geometry.
-    """
-    from tokenspeed.runtime.execution.cudagraph_memory import reserve_and_rebind
-
-    server_args.attention_backend, server_args.drafter_attention_backend = (
-        requested_backends
-    )
-    attention = reserve_and_rebind(
-        executor,
-        build_components,
-        server_args,
-        gpu_id,
-        profiled_cache_bytes=probe.profiled_cache_bytes,
-        startup_resident_bytes=startup_resident_bytes,
-    )
-    return attention, pool_views(attention)
-
-
 def probe_arena_floor(
     server_args: ServerArgs,
     model_config: ModelConfig,
@@ -1734,6 +1700,7 @@ def build_device_side(
     # import execution types — a module-level import would cycle.
     from tokenspeed.runtime.distributed.comm_ops import prepare_all_reduce_runtime
     from tokenspeed.runtime.engine.scheduler_utils import log_gpu_memory_summary
+    from tokenspeed.runtime.execution.cudagraph_memory import GraphMemoryProbe
     from tokenspeed.runtime.execution.distributed_initializer import (
         DistributedConfig,
     )
@@ -1840,8 +1807,6 @@ def build_device_side(
         graph_reserve_bytes: int,
         probe_batch_rows: int | None,
         profiled_cache_bytes: int | None,
-        reuse_target_backend: AttentionBackend | None,
-        reuse_draft_backend: AttentionBackend | None,
     ) -> AttentionBuild:
         return create_attn_components(
             server_args,
@@ -1857,50 +1822,14 @@ def build_device_side(
             post_profile_bytes=post_profile_bytes,
             probe_batch_rows=probe_batch_rows,
             profiled_cache_bytes=profiled_cache_bytes,
-            reuse_target_backend=reuse_target_backend,
-            reuse_draft_backend=reuse_draft_backend,
+            reuse_target_backend=None,
+            reuse_draft_backend=None,
         )
 
-    requested_backends = (
-        server_args.attention_backend,
-        server_args.drafter_attention_backend,
-    )
-    refusal = _cudagraph_probe_refusal(server_args)
-    if refusal is not None:
-        logger.info(
-            f"CUDA-graph memory reserve off, startup residue unreserved: {refusal}"
-        )
-    probing = refusal is None
-    narrowing = narrowing_prefill_model(target.model)
-    attention = build_components(
-        graph_reserve_bytes=0,
-        probe_batch_rows=(
-            probe_arena_floor(
-                server_args,
-                model_config,
-                max_forward_tokens,
-                decoder_rows_per_request=(
-                    None
-                    if narrowing is None
-                    else narrowing.max_decoder_rows_per_request
-                ),
-            )
-            if probing
-            else None
-        ),
-        profiled_cache_bytes=None,
-        reuse_target_backend=None,
-        reuse_draft_backend=None,
-    )
-    views = pool_views(attention)
+    replays_prefill_graphs = _replays_prefill_graphs(server_args, model_config)
 
-    # On CUDA, what startup keeps resident after the probe build joins the reserve.
-    startup_memory = (
-        DriverMemoryDeltaObserver(torch.get_device_module(server_args.device), gpu_id)
-        if probing and current_platform().is_nvidia
-        else NULL_MEMORY_DELTA_OBSERVER
-    )
-    with startup_memory.measure("startup"), startup_phase("executor.init"):
+    @startup_phase("executor.init")
+    def build_executor(attention: AttentionBuild, views: PoolViews) -> ModelExecutor:
         executor = create_model_executor(
             server_args=server_args,
             config=ModelExecutorConfig.from_server_args(
@@ -1920,54 +1849,101 @@ def build_device_side(
             draft_attn_backend=attention.draft_attn_backend,
             draft_token_to_kv_pool=views.draft_token_to_kv_pool,
         )
-    replays_prefill_graphs = _replays_prefill_graphs(server_args, model_config)
-    if replays_prefill_graphs:
-        # Ranks must plan alike: one rank eager while its peers replay hangs them.
-        check_rank_uniform_prefill_plan(executor.prefill_graph, server_args)
-    # Once per process, before the probe: a graph keeps its capture-time tactic.
-    with (
-        startup_memory.measure("startup"),
-        startup_phase("kernels.autotune"),
-        current_platform().restore_stack_limit(),
-    ):
-        executor.autotune(keep_loaded_tactics=False)
-    if probing and current_platform().is_nvidia:
-        # After empty_cache, reserved minus allocated is residue pinned by live buffers.
-        device_module = torch.get_device_module(server_args.device)
-        pinned = device_module.memory_reserved() - device_module.memory_allocated()
-        logger.info(
-            f"startup allocator cache after empty_cache: {pinned / 2**30:.2f} GiB"
-        )
-    if probing:
-        # Consumers above keep the probe's: they read only block-count-invariant fields.
-        with startup_phase("graph.probe_rebind"):
-            attention, views = _rebind_under_reserve(
-                executor,
-                build_components,
+        if replays_prefill_graphs:
+            # Ranks must plan alike: one rank eager while its peers replay hangs.
+            check_rank_uniform_prefill_plan(executor.prefill_graph, server_args)
+        return executor
+
+    @startup_phase("kernels.autotune")
+    def autotune(executor: ModelExecutor) -> None:
+        with current_platform().restore_stack_limit():
+            executor.autotune(keep_loaded_tactics=False)
+
+    @startup_phase("graph.probe_rebind")
+    def measure_probe() -> tuple[int, int]:
+        narrowing = narrowing_prefill_model(target.model)
+        attention = build_components(
+            graph_reserve_bytes=0,
+            probe_batch_rows=probe_arena_floor(
                 server_args,
-                gpu_id,
-                attention,
-                requested_backends,
+                model_config,
+                max_forward_tokens,
+                decoder_rows_per_request=(
+                    None
+                    if narrowing is None
+                    else narrowing.max_decoder_rows_per_request
+                ),
+            ),
+            profiled_cache_bytes=None,
+        )
+        profiled_cache_bytes = attention.profiled_cache_bytes
+        # On CUDA, the serving executor and one-time tuning share the reserve.
+        startup_memory = (
+            DriverMemoryDeltaObserver(
+                torch.get_device_module(server_args.device), gpu_id
+            )
+            if current_platform().is_nvidia
+            else NULL_MEMORY_DELTA_OBSERVER
+        )
+        with startup_memory.measure("startup"):
+            executor = build_executor(attention, pool_views(attention))
+        probe = GraphMemoryProbe(executor, server_args, gpu_id)
+        del attention
+        try:
+            with startup_memory.measure("startup"):
+                autotune(executor)
+            if current_platform().is_nvidia:
+                device_module = torch.get_device_module(server_args.device)
+                pinned = (
+                    device_module.memory_reserved() - device_module.memory_allocated()
+                )
+                logger.info(
+                    f"startup allocator cache after empty_cache: {pinned / 2**30:.2f} GiB"
+                )
+            graph_reserve_bytes = probe.measure(
                 startup_resident_bytes=sum(startup_memory.samples.get("startup", ())),
             )
+        finally:
+            del executor
+            probe.close()
+        probe.require_storage_released()
+        return graph_reserve_bytes, profiled_cache_bytes
+
+    refusal = _cudagraph_probe_refusal(server_args)
+    if refusal is None:
+        requested_backends = (
+            server_args.attention_backend,
+            server_args.drafter_attention_backend,
+        )
+        graph_reserve_bytes, profiled_cache_bytes = measure_probe()
+        # The probe resolves these in place during its build.
+        server_args.attention_backend, server_args.drafter_attention_backend = (
+            requested_backends
+        )
+    else:
+        logger.info(
+            f"CUDA-graph memory reserve off, startup residue unreserved: {refusal}"
+        )
+        graph_reserve_bytes, profiled_cache_bytes = 0, None
+
+    attention = build_components(
+        graph_reserve_bytes=graph_reserve_bytes,
+        probe_batch_rows=None,
+        profiled_cache_bytes=profiled_cache_bytes,
+    )
+    views = pool_views(attention)
+    executor = build_executor(attention, views)
+    if refusal is not None:
+        autotune(executor)
+    else:
         _warm_rebound_draft(executor, server_args, has_draft=draft is not None)
-        if current_platform().is_amd:
-            # Kernels warmed above read the probe's small KV arena. On AMD,
-            # Triton keys a compilation on whether each tensor's storage fits
-            # in 2 GB (buffer ops address it with 32-bit offsets), so a kernel
-            # that specializes the arena's pointers does not serve the
-            # full-size arena: without this, it compiles on its first live
-            # batch instead, mid-serve. Kernels that do not specialize the
-            # arena's pointers compile once and are not affected. Other
-            # platforms' kernels do not key on the arena's size and skip the
-            # second warm-up. Warm again on the final pools with the tactics
-            # tuned above; tuning now would allocate workspaces outside the
-            # reserve the rebind sized.
-            with (
-                startup_phase("kernels.rewarm"),
-                current_platform().restore_stack_limit(),
-            ):
-                executor.warm_kernels()
+        # The serving executor needs its own warmed backend and stream state.
+        # Reuse the tactics selected by the probe to avoid tuning twice.
+        with (
+            startup_phase("kernels.rewarm"),
+            current_platform().restore_stack_limit(),
+        ):
+            executor.warm_kernels()
 
     # The compact Host cache: the L2 prefix tier (--enable-kvstore), the
     # retraction snapshot pool (on by default on the roles that retract), or

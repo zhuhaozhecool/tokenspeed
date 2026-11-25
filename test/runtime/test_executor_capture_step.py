@@ -212,16 +212,16 @@ def test_the_step_runs_its_operations_in_the_order_the_constructor_did():
     assert len(tune) == 1, tune
     assert max(tune) < min(capture), (tune, capture)
 
-    # Mutation-checked: a probe on untuned graphs prices kernels that never serve.
-    rebind = [
+    # A probe on untuned graphs prices kernels that never serve.
+    measure = [
         call.lineno
-        for call in ast.walk(builder)
-        if isinstance(call, ast.Call)
-        and isinstance(call.func, ast.Name)
-        and call.func.id == "_rebind_under_reserve"
+        for call in _attribute_calls(builder)
+        if call.func.attr == "measure"
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "probe"
     ]
-    assert len(rebind) == 1, rebind
-    assert max(tune) < min(rebind), (tune, rebind)
+    assert len(measure) == 1, measure
+    assert max(tune) < min(measure), (tune, measure)
 
     serving = _function(_tree("device.py"), "_capture_serving_graphs")
     captured = [

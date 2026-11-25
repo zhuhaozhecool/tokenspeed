@@ -337,13 +337,11 @@ Decode capture continues to use the reserved null page.
 Memory-saver boots skip the disposable graph-memory probe: the installed
 allocator cannot destroy a tagged probe graph pool and then capture again.
 They bind the real cache pool directly and capture the serving graphs once,
-leaving GPU-utilization headroom for graph memory. The rebind contract below
-applies to boots that perform the probe.
+leaving GPU-utilization headroom for graph memory.
 
-`set_cache_pool` may run more than once on the same backend tree: a memory
-probe binds a small pool, captures into a throwaway graph pool, then binds
-the real pool. The contract is that a rebound backend is indistinguishable
-from one first bound to that pool:
+`set_cache_pool` may run more than once on the same backend tree. The
+contract is that a rebound backend is indistinguishable from one first
+bound to that pool:
 
 * Every node first answers `validate_cache_pool` for the whole subtree, and
   only then do the children and the node publish, without a second
@@ -389,16 +387,9 @@ from one first bound to that pool:
   before the executor was returned, so `set_cache_pool` re-publishes them.
   `preallocate_verify_workspace` is the factory's, re-issued when the rebind
   rebuilds through it -- a rebind that skipped the factory would strand it.
-* A rebind is an operation between the probe's `capture_graphs()` and the
-  serving one, owned by `reserve_and_rebind`; nothing in the backend tree
-  guards against a rebind at another time.
-  That orchestrator releases both graph owners' captures first (the captured
-  graphs record the buffers a publish drops, and eager kernels cache
-  pointers they allocated inside a capture, such as FlashInfer's trtllm-gen
-  MoE runner and Qwen4-Exp's uniform index bundles), unfreezes the device-
-  global workspace pool the executor froze before capturing, rebinds the
-  trees, re-runs `bind_cache_groups` and the initialization sequence above,
-  freezes the workspace again and captures again.
+* Pool changes require the caller to synchronize device work and release
+  captures before replacing buffers. The caller re-publishes model bindings
+  and graph state before capturing again.
 * The KV budget reserves what the graphs will cost: a probe binds the
   smallest arena the family can run on (refused, with the numbers, when the
   memory profile cannot hold it, since a serving arena would not fit either)
@@ -421,11 +412,14 @@ from one first bound to that pool:
   tight: Kimi-K3.1 on the PD prefill role, with 60 prefill entries sharing
   one pool, was reserved 11.64 GB and booted with 6.64 GB more device memory
   free than the same launch without the ladder.
-  The result is reduced across ranks with MAX. The orchestrator
-  releases the probe's graphs and collects the cycles they sit in. It then
-  discards the probe arena's backing storage before allocating the serving
-  arena. The old views can still carry geometry into the rebind. The serving
-  pool is sized from the profile the probe build took minus the projection.
+  The result is reduced across ranks with MAX. A startup-only executor owns
+  the probe, alongside the loaded model runners. The probe closes by draining
+  device work, releasing graphs, and dropping its references. It checks that
+  all backing regions have lost their last storage owner before the serving
+  pool is allocated. An escaped Tensor remains valid and causes startup to
+  fail with a live-storage error. The serving executor uses the same model
+  runners and warms with the loaded tactics. Its pool is sized from the
+  original profile minus the projection.
   The reserve covers the bytes
   inside the capture windows as projected -- what a boot without a probe
   captures there, one-time bytes the first captures take included; the

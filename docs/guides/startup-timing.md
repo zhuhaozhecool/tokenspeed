@@ -30,7 +30,7 @@ The scheduler records these phases:
 | `kv.build` | Attention backend and KV pool construction, including rebinds |
 | `executor.init` | Executor construction |
 | `kernels.autotune` | Startup kernel compilation warmup and optional tactic selection |
-| `graph.probe_rebind` | Optional partial capture probe, release, and KV rebind |
+| `graph.probe_rebind` | Optional probe runtime construction, partial capture, and release |
 | `graph.capture` | Final serving graph capture |
 
 Detailed weight phases currently cover the default loader. Other loaders still

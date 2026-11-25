@@ -527,71 +527,31 @@ def test_narrowing_decoders_share_outputs_and_encoders_keep_their_handoffs(
     assert given[2] is graph._encoder_handoff_storage
 
 
-def test_a_rebind_hands_back_views_of_the_rebuilt_pool(monkeypatch) -> None:
+def test_pool_views_describe_the_bound_pool(monkeypatch) -> None:
     import tokenspeed.runtime.engine.scheduler_utils as scheduler_utils
 
+    group = SimpleNamespace(group_id="state", deferred_decode_state=False)
     monkeypatch.setattr(
         scheduler_utils, "scheduler_cache_geometry_from_pool", lambda p: ("geometry", p)
     )
-    groups = {
-        pool: [SimpleNamespace(group_id=f"{pool} state", deferred_decode_state=False)]
-        for pool in ("probe", "real")
-    }
-    monkeypatch.setattr(scheduler_utils, "pool_to_cache_groups", groups.__getitem__)
-    # The views mark the State groups whose decode state the rebuilt backend
-    # defers, as the scheduler's retraction folds need.
-    rebuilt = SimpleNamespace(
+    monkeypatch.setattr(scheduler_utils, "pool_to_cache_groups", lambda p: [group])
+    attention = SimpleNamespace(
         token_to_kv_pool="real",
         draft_token_to_kv_pool="draft",
         attn_backend=SimpleNamespace(
-            deferred_decode_state_groups=lambda: frozenset({"real state"})
+            deferred_decode_state_groups=lambda: frozenset({"state"})
         ),
     )
-    seen = []
-    args = SimpleNamespace(
-        attention_backend="hybrid_linear_attn", drafter_attention_backend=None
-    )
-    monkeypatch.setattr(
-        cudagraph_memory,
-        "reserve_and_rebind",
-        lambda *a, profiled_cache_bytes, startup_resident_bytes: seen.append(
-            (
-                a,
-                profiled_cache_bytes,
-                startup_resident_bytes,
-                args.attention_backend,
-                args.drafter_attention_backend,
-            )
-        )
-        or rebuilt,
-    )
-    probe = SimpleNamespace(
-        token_to_kv_pool="probe",
-        draft_token_to_kv_pool="probe draft",
-        profiled_cache_bytes=7,
-    )
 
-    attention, views = device._rebind_under_reserve(
-        "executor",
-        "build",
-        args,
-        3,
-        probe,
-        ("trtllm_mla", "flashinfer"),
-        startup_resident_bytes=11,
-    )
+    views = device.pool_views(attention)
 
-    assert attention is rebuilt
-    # The rebuild resolves from the operator's choice, not the probe's write-back.
-    assert seen == [(("executor", "build", args, 3), 7, 11, "trtllm_mla", "flashinfer")]
     assert views == device.PoolViews(
         token_to_kv_pool="real",
         draft_token_to_kv_pool="draft",
         cache_geometry=("geometry", "real"),
-        cache_groups=groups["real"],
+        cache_groups=[group],
     )
-    assert [group.deferred_decode_state for group in views.cache_groups] == [True]
-    assert not groups["probe"][0].deferred_decode_state
+    assert group.deferred_decode_state
 
 
 @pytest.mark.parametrize("side", ["target", "draft"])
